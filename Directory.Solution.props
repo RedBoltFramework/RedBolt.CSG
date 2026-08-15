@@ -6,5 +6,5 @@
     <RedBoltExternalModuleRoot>$(RedBoltCSGRoot)</RedBoltExternalModuleRoot>
     <RedBoltExternalModuleName>RedBolt.CSG</RedBoltExternalModuleName>
   </PropertyGroup>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/Directory.Solution.props" />
+  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/Directory.Solution.props" />
 </Project>

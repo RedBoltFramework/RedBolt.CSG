@@ -1,3 +1,3 @@
 <Project>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/ProjectEligibility.targets" />
+  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/ProjectEligibility.targets" />
 </Project>

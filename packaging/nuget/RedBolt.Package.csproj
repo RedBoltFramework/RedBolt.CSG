@@ -4,5 +4,5 @@
     <RedBoltExternalPackageRepositoryUrl>https://github.com/RedBoltFramework/RedBolt.CSG.git</RedBoltExternalPackageRepositoryUrl>
     <RedBoltExternalPackageTags>RedBolt game-engine csharp dotnet csg constructive-solid-geometry</RedBoltExternalPackageTags>
   </PropertyGroup>
-  <Import Project="../../../RedBolt/src/RedBolt/ExternalModule/NuGetPackage.targets" />
+  <Import Project="../../../RedBolt/src/RedBolt/Build/NuGetPackage.targets" />
 </Project>

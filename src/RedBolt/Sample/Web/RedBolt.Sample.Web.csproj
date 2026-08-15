@@ -8,5 +8,5 @@
     <Reference Include="RedBolt.Bindings.DearImGui" HintPath="$(RedBoltBaseDearImGuiBindingAssembly)" />
     <Compile Include="../CSG/**/*.cs" Link="Samples/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/WebSample.targets" />
+  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/WebSample.targets" />
 </Project>

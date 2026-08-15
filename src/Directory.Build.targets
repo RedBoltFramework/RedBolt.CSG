@@ -1,5 +1,5 @@
 <Project>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/Directory.Build.targets" />
+  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/Directory.Build.targets" />
 
   <Target Name="RedBoltCSGConfigureProjectReferences"
           BeforeTargets="AssignProjectConfiguration"

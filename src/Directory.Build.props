@@ -11,7 +11,7 @@
     <RedBoltExternalUsesDearImGui>true</RedBoltExternalUsesDearImGui>
     <RedBoltExternalDesktopResourceRoot>$(RedBoltRoot)</RedBoltExternalDesktopResourceRoot>
   </PropertyGroup>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/Directory.Build.props" />
+  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/Directory.Build.props" />
   <PropertyGroup>
     <RedBoltExternalModuleEnabled>$(RedBoltCSGEnabled)</RedBoltExternalModuleEnabled>
     <RedBoltExternalModuleBuildProperties>RedBoltCSGEnabled=$(RedBoltCSGEnabled)</RedBoltExternalModuleBuildProperties>

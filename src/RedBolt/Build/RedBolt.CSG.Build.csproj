@@ -14,5 +14,5 @@
     <_RedBoltExternalWebProject Include="@(_RedBoltExternalCommonProject)" />
     <_RedBoltExternalWebProject Include="../Sample/Web/RedBolt.Sample.Web.csproj" Condition="'$(RedBoltSamplesEnabled)' == 'true'" />
   </ItemGroup>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/Build.targets" />
+  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/Build.targets" />
 </Project>

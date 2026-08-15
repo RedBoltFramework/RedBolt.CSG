@@ -1,4 +1,4 @@
-#:project ../../../RedBolt/src/RedBolt/ExternalModule/Packaging/RedBolt.ExternalModule.Packaging.csproj
+#:project ../../../RedBolt/src/RedBolt/Build/Packaging/RedBolt.ExternalModule.Packaging.csproj
 
 using System.Runtime.CompilerServices;
 using RedBolt.ExternalModule.Packaging;
