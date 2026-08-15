@@ -1,5 +1,6 @@
 <Project>
-  <ItemGroup Condition="('$(RedBoltPlatform)' == 'linux-x64' or '$(RedBoltPlatform)' == 'win-x64') and '$(IsTestProject)' == 'true'">
-    <AdditionalProbingPath Include="$(RedBoltCSGRoot)/build/bin/$(Configuration)/$(RedBoltPlatform)/core" />
+  <ItemGroup>
+    <RedBoltExternalTestModule Include="$(RedBoltCSGRoot)" HasNative="false" />
   </ItemGroup>
+  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/TestIntegration.targets" Condition="'$(RedBoltExternalTestIntegrationImported)' != 'true'" />
 </Project>

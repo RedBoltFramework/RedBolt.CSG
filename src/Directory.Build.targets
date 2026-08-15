@@ -1,12 +1,5 @@
 <Project>
-  <Import Project="$(RedBoltRoot)/src/Directory.Build.targets" />
-
-  <ItemGroup Condition="('$(RedBoltPlatform)' == 'linux-x64' or '$(RedBoltPlatform)' == 'win-x64') and ('$(OutputType)' == 'Exe' or '$(IsTestProject)' == 'true')">
-    <AdditionalProbingPath Include="$(RedBoltRoot)/build/bin/$(Configuration)/$(RedBoltPlatform)/core" />
-    <AdditionalProbingPath Include="$(RedBoltRoot)/build/bin/$(Configuration)/$(RedBoltPlatform)/extern" />
-    <AdditionalProbingPath Include="$(RedBoltRoot)/build/bin/$(Configuration)/host/extern" />
-    <AdditionalProbingPath Include="$(RedBoltRoot)/build/bin/$(Configuration)/host/tools" />
-  </ItemGroup>
+  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/Directory.Build.targets" />
 
   <Target Name="RedBoltCSGConfigureProjectReferences"
           BeforeTargets="AssignProjectConfiguration"
@@ -25,14 +18,5 @@
         <AdditionalProperties>RedBoltPlatform=$(RedBoltPlatform);RedBoltNativePreset=$(RedBoltNativePreset);RedBoltTargetFramework=$(RedBoltTargetFramework)</AdditionalProperties>
       </ProjectReference>
     </ItemGroup>
-  </Target>
-
-  <Target Name="RedBoltCSGStageDesktopResources"
-          AfterTargets="Build"
-          Condition="'$(RedBoltPlatform)' == 'linux-x64' and '$(OutputType)' == 'Exe' and '$(RedBoltProjectBuildEnabled)' == 'true'">
-    <MakeDir Directories="$(RedBoltOutputRoot)" />
-    <Exec Condition="!Exists('$(RedBoltOutputRoot)/CoreData')" Command="cmake -E create_symlink &quot;$(RedBoltRoot)/bin/CoreData&quot; &quot;$(RedBoltOutputRoot)/CoreData&quot;" />
-    <Exec Condition="!Exists('$(RedBoltOutputRoot)/Data')" Command="cmake -E create_symlink &quot;$(RedBoltRoot)/bin/Data&quot; &quot;$(RedBoltOutputRoot)/Data&quot;" />
-    <Exec Condition="!Exists('$(RedBoltOutputRoot)/Base')" Command="cmake -E create_symlink &quot;$(RedBoltRoot)/build/bin/$(Configuration)/$(RedBoltPlatform)&quot; &quot;$(RedBoltOutputRoot)/Base&quot;" />
   </Target>
 </Project>

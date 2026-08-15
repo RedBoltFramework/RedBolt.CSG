@@ -1,11 +1,3 @@
 <Project>
-  <Import Project="$(RedBoltRoot)/src/RedBolt.ProjectEligibility.targets" />
-  <PropertyGroup>
-    <_RedBoltProjectModuleEnabled Condition="'$(MSBuildProjectName)' == 'RedBolt.CSG'">$(RedBoltCSGEnabled)</_RedBoltProjectModuleEnabled>
-    <RedBoltProjectBuildEnabled Condition="'$(_RedBoltProjectPlatformEnabled)' == 'true' and '$(_RedBoltProjectPlatformSupported)' == 'true' and '$(_RedBoltProjectModuleEnabled)' == 'true'">true</RedBoltProjectBuildEnabled>
-    <RedBoltProjectBuildEnabled Condition="'$(RedBoltIgnoreBuildSelection)' == 'true'">true</RedBoltProjectBuildEnabled>
-    <BuildDependsOn Condition="'$(MSBuildProjectName)' == 'RedBolt.CSG.Build'">RedBoltBuildSelectedProjects</BuildDependsOn>
-    <RebuildDependsOn Condition="'$(MSBuildProjectName)' == 'RedBolt.CSG.Build'">RedBoltBuildSelectedProjects</RebuildDependsOn>
-    <CleanDependsOn Condition="'$(MSBuildProjectName)' == 'RedBolt.CSG.Build'">RedBoltCleanSelectedProjects</CleanDependsOn>
-  </PropertyGroup>
+  <Import Project="$(RedBoltRoot)/src/RedBolt/ExternalModule/ProjectEligibility.targets" />
 </Project>
