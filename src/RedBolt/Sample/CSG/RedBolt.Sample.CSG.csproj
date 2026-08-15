@@ -8,7 +8,7 @@
     <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/Core/RedBolt.Core.csproj" />
     <ProjectReference Include="../../CSG/RedBolt.CSG.csproj" />
     <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/DearImGui/RedBolt.DearImGui.csproj"
-                      AdditionalProperties="RedBoltDearImGuiEnabled=true;RedBoltUtilityEnabled=true;RedBoltIKEnabled=true" />
+                      AdditionalProperties="RedBoltDearImGuiEnabled=true;RedBoltUtilityEnabled=true" />
     <Reference Include="RedBolt.Bindings.DearImGui" HintPath="$(RedBoltBaseDearImGuiBindingAssembly)" />
   </ItemGroup>
 </Project>

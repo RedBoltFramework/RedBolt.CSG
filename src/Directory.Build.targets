@@ -7,7 +7,7 @@
     <ItemGroup>
       <ProjectReference Update="@(ProjectReference)"
                         Condition="$([System.String]::Copy('%(ProjectReference.FullPath)').StartsWith('$(RedBoltRoot)/src/RedBolt/'))">
-        <AdditionalProperties>%(ProjectReference.AdditionalProperties);RedBoltDearImGuiEnabled=true;RedBoltUtilityEnabled=true;RedBoltIKEnabled=true</AdditionalProperties>
+        <AdditionalProperties>%(ProjectReference.AdditionalProperties);RedBoltDearImGuiEnabled=true;RedBoltUtilityEnabled=true</AdditionalProperties>
       </ProjectReference>
       <ProjectReference Update="@(ProjectReference)"
                         Condition="'$(RedBoltPlatform)' == 'browser-wasm' and '%(ProjectReference.AdditionalProperties)' == '' and $([System.String]::Copy('%(ProjectReference.FullPath)').StartsWith('$(RedBoltCSGRoot)/src/RedBolt/'))">
