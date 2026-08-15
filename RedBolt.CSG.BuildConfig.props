@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <RedBoltCSGEnabled Condition="$([System.String]::Copy('$(_RedBoltEnableModulesList)').Contains(',all,')) or $([System.String]::Copy('$(_RedBoltEnableModulesList)').Contains(',csg,'))">true</RedBoltCSGEnabled>
+    <RedBoltCSGEnabled Condition="'$(RedBoltCSGEnabled)' == '' and !$([System.String]::Copy('$(_RedBoltDisableModulesList)').Contains(',all,')) and !$([System.String]::Copy('$(_RedBoltDisableModulesList)').Contains(',csg,'))">true</RedBoltCSGEnabled>
+    <RedBoltCSGEnabled Condition="'$(RedBoltCSGEnabled)' == ''">false</RedBoltCSGEnabled>
+  </PropertyGroup>
+</Project>

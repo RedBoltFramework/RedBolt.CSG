@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <RedBoltCSGRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory).'))</RedBoltCSGRoot>
+    <RedBoltRoot Condition="'$(RedBoltRoot)' == ''">$([System.IO.Path]::GetFullPath('$(RedBoltCSGRoot)/../RedBolt'))</RedBoltRoot>
+    <RedBoltDearImGuiEnabled>true</RedBoltDearImGuiEnabled>
+  </PropertyGroup>
+  <Import Project="$(RedBoltRoot)/Directory.Solution.props" />
+  <PropertyGroup>
+    <RedBoltTraversalProject>$(RedBoltCSGRoot)/src/RedBolt/Build/RedBolt.CSG.Build.csproj</RedBoltTraversalProject>
+    <RedBoltSolutionBuildRoot>$(RedBoltCSGRoot)/build</RedBoltSolutionBuildRoot>
+    <RedBoltBuildConfigPath>$(RedBoltCSGRoot)/build/BuildConfig.props</RedBoltBuildConfigPath>
+  </PropertyGroup>
+</Project>

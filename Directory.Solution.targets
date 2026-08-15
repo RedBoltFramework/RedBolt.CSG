@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="$(RedBoltRoot)/Directory.Solution.targets" />
+  <PropertyGroup>
+    <RedBoltTraversalProject>$([System.IO.Path]::GetFullPath('$(RedBoltCSGRoot)/src/RedBolt/Build/RedBolt.CSG.Build.csproj'))</RedBoltTraversalProject>
+    <RedBoltSolutionBuildRoot>$(RedBoltCSGRoot)/build</RedBoltSolutionBuildRoot>
+    <RedBoltBuildConfigPath>$(RedBoltCSGRoot)/build/BuildConfig.props</RedBoltBuildConfigPath>
+  </PropertyGroup>
+</Project>

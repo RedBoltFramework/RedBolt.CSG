@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <RedBoltTestsProject>$([System.IO.Path]::GetFullPath('$(RedBoltCSGRoot)/../RedBolt.Tests/RedBolt.Tests.csproj'))</RedBoltTestsProject>
+    <_RedBoltLinuxProperties>Configuration=$(Configuration);RedBoltPlatform=linux-x64;RedBoltNativePreset=linux-x64</_RedBoltLinuxProperties>
+    <_RedBoltWindowsProperties>Configuration=$(Configuration);RedBoltPlatform=win-x64;RedBoltNativePreset=win-x64</_RedBoltWindowsProperties>
+    <_RedBoltAndroidX64Properties>Configuration=$(Configuration);RedBoltPlatform=android-x64;RedBoltNativePreset=android-x64;RedBoltTargetFramework=net10.0-android;RedBoltBuildAllAndroidPackages=false</_RedBoltAndroidX64Properties>
+    <_RedBoltAndroidArm64Properties>Configuration=$(Configuration);RedBoltPlatform=android-arm64;RedBoltNativePreset=android-arm64;RedBoltTargetFramework=net10.0-android;RedBoltBuildAllAndroidPackages=false</_RedBoltAndroidArm64Properties>
+    <_RedBoltWebProperties>Configuration=$(Configuration);RedBoltPlatform=browser-wasm;RedBoltNativePreset=browser-wasm</_RedBoltWebProperties>
+  </PropertyGroup>
+  <ItemGroup>
+    <_RedBoltCSGCommonProject Include="../CSG/RedBolt.CSG.csproj" Condition="'$(RedBoltCSGEnabled)' == 'true'" />
+    <_RedBoltCSGDesktopProject Include="@(_RedBoltCSGCommonProject)" />
+    <_RedBoltCSGDesktopProject Include="../Sample/*/*.csproj" Exclude="../Sample/Android/*.csproj;../Sample/Web/*.csproj" Condition="'$(RedBoltSamplesEnabled)' == 'true'" />
+    <_RedBoltCSGDesktopProject Include="$(RedBoltTestsProject)" Condition="'$(RedBoltTestsEnabled)' == 'true' and Exists('$(RedBoltTestsProject)')" />
+    <_RedBoltCSGAndroidProject Include="@(_RedBoltCSGCommonProject)" />
+    <_RedBoltCSGAndroidProject Include="../Sample/Android/RedBolt.Sample.Android.csproj" Condition="'$(RedBoltSamplesEnabled)' == 'true'" />
+    <_RedBoltCSGWebProject Include="@(_RedBoltCSGCommonProject)" />
+    <_RedBoltCSGWebProject Include="../Sample/Web/RedBolt.Sample.Web.csproj" Condition="'$(RedBoltSamplesEnabled)' == 'true'" />
+  </ItemGroup>
+  <Target Name="RedBoltCSGValidateBuildConfiguration">
+    <Error Condition="'$(RedBoltTestsEnabled)' == 'true' and !Exists('$(RedBoltTestsProject)' )" Text="The tests module is enabled, but '$(RedBoltTestsProject)' does not exist." />
+  </Target>
+  <Target Name="RedBoltRestoreSelectedProjects" DependsOnTargets="RedBoltCSGValidateBuildConfiguration">
+    <MSBuild Projects="@(_RedBoltCSGDesktopProject)" Targets="Restore" BuildInParallel="false" Properties="$(_RedBoltLinuxProperties)" Condition="'$(RedBoltLinuxEnabled)' == 'true' and '$(RedBoltX64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGDesktopProject)" Targets="Restore" BuildInParallel="false" Properties="$(_RedBoltWindowsProperties)" Condition="'$(RedBoltWindowsEnabled)' == 'true' and '$(RedBoltX64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGAndroidProject)" Targets="Restore" BuildInParallel="false" Properties="$(_RedBoltAndroidX64Properties)" Condition="'$(RedBoltAndroidEnabled)' == 'true' and '$(RedBoltX64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGAndroidProject)" Targets="Restore" BuildInParallel="false" Properties="$(_RedBoltAndroidArm64Properties)" Condition="'$(RedBoltAndroidEnabled)' == 'true' and '$(RedBoltArm64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGWebProject)" Targets="Restore" BuildInParallel="false" Properties="$(_RedBoltWebProperties)" Condition="'$(RedBoltWebEnabled)' == 'true'" />
+  </Target>
+  <Target Name="RedBoltBuildSelectedProjects" DependsOnTargets="RedBoltCSGValidateBuildConfiguration">
+    <MSBuild Projects="@(_RedBoltCSGDesktopProject)" Targets="Build" BuildInParallel="false" RemoveProperties="BuildingSolutionFile;CurrentSolutionConfigurationContents" Properties="$(_RedBoltLinuxProperties)" Condition="'$(RedBoltLinuxEnabled)' == 'true' and '$(RedBoltX64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGDesktopProject)" Targets="Build" BuildInParallel="false" RemoveProperties="BuildingSolutionFile;CurrentSolutionConfigurationContents" Properties="$(_RedBoltWindowsProperties)" Condition="'$(RedBoltWindowsEnabled)' == 'true' and '$(RedBoltX64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGAndroidProject)" Targets="Build" BuildInParallel="false" RemoveProperties="BuildingSolutionFile;CurrentSolutionConfigurationContents" Properties="$(_RedBoltAndroidX64Properties)" Condition="'$(RedBoltAndroidEnabled)' == 'true' and '$(RedBoltX64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGAndroidProject)" Targets="Build" BuildInParallel="false" RemoveProperties="BuildingSolutionFile;CurrentSolutionConfigurationContents" Properties="$(_RedBoltAndroidArm64Properties)" Condition="'$(RedBoltAndroidEnabled)' == 'true' and '$(RedBoltArm64Enabled)' == 'true'" />
+    <MSBuild Projects="@(_RedBoltCSGWebProject)" Targets="Build" BuildInParallel="false" RemoveProperties="BuildingSolutionFile;CurrentSolutionConfigurationContents" Properties="$(_RedBoltWebProperties)" Condition="'$(RedBoltWebEnabled)' == 'true'" />
+  </Target>
+  <Target Name="RedBoltCleanSelectedProjects">
+    <MSBuild Projects="@(_RedBoltCSGDesktopProject);@(_RedBoltCSGAndroidProject);@(_RedBoltCSGWebProject)" Targets="Clean" BuildInParallel="true" />
+  </Target>
+</Project>

@@ -1,0 +1,34 @@
+# Local OpenCode state and packages.
+.opencode/ralph-loop.local*.md
+.opencode/node_modules/
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/bun.lock
+.slim/deepwork/
+.pi*
+
+# CMake and build outputs.
+cmake-build/
+out/
+build/
+CMakeUserPresets.json
+compile_commands.json
+RedBolt.log
+imgui.ini
+
+# Dependencies populated by CPM.cmake.
+extern/cmake.lock
+extern/*/
+
+# .NET outputs.
+bin/
+obj/
+
+# Editor and OS noise.
+.cache/
+.vs/
+.vscode/
+.idea/
+*.user
+*.swp
+*~
