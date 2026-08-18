@@ -11,7 +11,6 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
     <RedBoltDearImGuiEnabled>true</RedBoltDearImGuiEnabled>
     <RedBoltExternalModuleRoot>$(RedBoltCSGRoot)</RedBoltExternalModuleRoot>
     <RedBoltExternalModuleName>RedBolt.CSG</RedBoltExternalModuleName>
-    <RedBoltExternalBuildProjectName>RedBolt.CSG.Build</RedBoltExternalBuildProjectName>
     <RedBoltExternalModuleProjectNames>RedBolt.CSG</RedBoltExternalModuleProjectNames>
     <RedBoltExternalHasNative>false</RedBoltExternalHasNative>
     <RedBoltExternalUsesDearImGui>true</RedBoltExternalUsesDearImGui>
@@ -20,6 +19,5 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
   <Import Project="$(RedBoltRoot)/src/RedBolt/Build/Directory.Build.props" />
   <PropertyGroup>
     <RedBoltExternalModuleEnabled>$(RedBoltCSGEnabled)</RedBoltExternalModuleEnabled>
-    <RedBoltExternalModuleBuildProperties>RedBoltCSGEnabled=$(RedBoltCSGEnabled)</RedBoltExternalModuleBuildProperties>
   </PropertyGroup>
 </Project>

@@ -5,15 +5,12 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
 -->
 
 <Solution>
-  <Folder Name="/src/RedBolt/Build/">
-    <Project Path="src/RedBolt/Build/RedBolt.CSG.Build.csproj" />
-  </Folder>
   <Folder Name="/src/RedBolt/">
-    <Project Path="src/RedBolt/CSG/RedBolt.CSG.csproj"><Build Project="false" /></Project>
+    <Project Path="src/RedBolt/CSG/RedBolt.CSG.csproj" />
   </Folder>
   <Folder Name="/src/RedBolt/Sample/">
-    <Project Path="src/RedBolt/Sample/CSG/RedBolt.Sample.CSG.csproj"><Build Project="false" /></Project>
-    <Project Path="src/RedBolt/Sample/Web/RedBolt.Sample.Web.csproj"><Build Project="false" /></Project>
-    <Project Path="src/RedBolt/Sample/Android/RedBolt.Sample.Android.csproj"><Build Project="false" /></Project>
+    <Project Path="src/RedBolt/Sample/CSG/RedBolt.Sample.CSG.csproj" />
+    <Project Path="src/RedBolt/Sample/Web/RedBolt.Sample.Web.csproj" />
+    <Project Path="src/RedBolt/Sample/Android/RedBolt.Sample.Android.csproj" />
   </Folder>
 </Solution>
