@@ -15,14 +15,6 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
                         Condition="$([System.String]::Copy('%(ProjectReference.FullPath)').StartsWith('$(RedBoltRoot)/src/RedBolt/'))">
         <AdditionalProperties>%(ProjectReference.AdditionalProperties);RedBoltDearImGuiEnabled=true;RedBoltUtilityEnabled=true</AdditionalProperties>
       </ProjectReference>
-      <ProjectReference Update="@(ProjectReference)"
-                        Condition="'$(RedBoltBuildPlatform)' == '' and '$(RedBoltPlatform)' == 'browser-wasm' and '%(ProjectReference.AdditionalProperties)' == '' and $([System.String]::Copy('%(ProjectReference.FullPath)').StartsWith('$(RedBoltCSGRoot)/src/RedBolt/'))">
-        <AdditionalProperties>RedBoltPlatform=browser-wasm;RedBoltNativePreset=browser-wasm</AdditionalProperties>
-      </ProjectReference>
-      <ProjectReference Update="@(ProjectReference)"
-                        Condition="'$(RedBoltBuildPlatform)' == '' and $([System.String]::Copy('$(RedBoltPlatform)').StartsWith('android-')) and '%(ProjectReference.AdditionalProperties)' == '' and $([System.String]::Copy('%(ProjectReference.FullPath)').StartsWith('$(RedBoltCSGRoot)/src/RedBolt/'))">
-        <AdditionalProperties>RedBoltPlatform=$(RedBoltPlatform);RedBoltNativePreset=$(RedBoltNativePreset);RedBoltTargetFramework=$(RedBoltTargetFramework)</AdditionalProperties>
-      </ProjectReference>
     </ItemGroup>
   </Target>
 </Project>
