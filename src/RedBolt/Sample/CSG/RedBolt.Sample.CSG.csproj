@@ -13,8 +13,6 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
   <ItemGroup>
     <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/Core/RedBolt.Core.csproj" />
     <ProjectReference Include="../../CSG/RedBolt.CSG.csproj" />
-    <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/DearImGui/RedBolt.DearImGui.csproj"
-                      AdditionalProperties="RedBoltDearImGuiEnabled=true;RedBoltUtilityEnabled=true" />
-    <Reference Include="RedBolt.Bindings.DearImGui" HintPath="$(RedBoltBaseDearImGuiBindingAssembly)" />
+    <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/DearImGui/RedBolt.DearImGui.csproj" />
   </ItemGroup>
 </Project>

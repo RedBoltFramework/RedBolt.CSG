@@ -6,5 +6,5 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
 
 <Project>
   <Import Project="$(MSBuildThisFileDirectory)../../Directory.Build.props" />
-  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/Sample.props" />
+  <Import Project="$(RedBoltRoot)/eng/RedBolt.ModuleBuild/Sample.props" />
 </Project>

@@ -11,9 +11,8 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../CSG/RedBolt.CSG.csproj" />
-    <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/DearImGui/RedBolt.DearImGui.csproj" AdditionalProperties="RedBoltDearImGuiEnabled=true;RedBoltUtilityEnabled=true" />
-    <Reference Include="RedBolt.Bindings.DearImGui" HintPath="$(RedBoltBaseDearImGuiBindingAssembly)" />
+    <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/DearImGui/RedBolt.DearImGui.csproj" />
     <Compile Include="../CSG/**/*.cs" Link="Samples/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/AndroidSample.targets" />
+  <Import Project="$(RedBoltRoot)/eng/RedBolt.ModuleBuild/AndroidSample.targets" />
 </Project>

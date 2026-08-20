@@ -20,8 +20,8 @@ The solution accepts the same platform, architecture, module, and sample selecti
 Build the aggregate WebAssembly or Android sample hosts directly. Use one build invocation at a time and do not use four build jobs while an Android emulator is running:
 
 ```sh
-dotnet build src/RedBolt/Sample/Web/RedBolt.Sample.Web.csproj --configuration Release -m:4 -p:RedBoltPlatform=browser-wasm -p:RedBoltNativePreset=browser-wasm
-dotnet build src/RedBolt/Sample/Android/RedBolt.Sample.Android.csproj --configuration Debug -f net10.0-android -m:4 -p:RedBoltPlatform=android-x64 -p:RedBoltNativePreset=android-x64 -p:RedBoltBuildAllAndroidPackages=false
+dotnet build src/RedBolt/Sample/Web/RedBolt.Sample.Web.csproj --configuration Release -m:4 -p:RedBoltPlatform=browser-wasm
+dotnet build src/RedBolt/Sample/Android/RedBolt.Sample.Android.csproj --configuration Debug -f net10.0-android -m:4 -p:RedBoltPlatform=android-x64 -p:RedBoltBuildAllAndroidPackages=false
 ```
 
 For Android, use the workspace JDK and SDK described by the parent `AGENTS.md`. Managed assemblies, sample outputs, and packages are written below this repository's `build/` directory. Base RedBolt outputs remain below `../RedBolt/build/`.

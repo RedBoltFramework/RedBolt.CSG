@@ -5,5 +5,5 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
 -->
 
 <Project>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/Sample.targets" />
+  <Import Project="$(RedBoltRoot)/eng/RedBolt.ModuleBuild/Sample.targets" />
 </Project>

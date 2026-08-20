@@ -5,8 +5,9 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
 -->
 
 <Project>
+  <!-- Registers this module with the shared test-integration logic. -->
   <ItemGroup>
     <RedBoltExternalTestModule Include="$(RedBoltCSGRoot)" HasNative="false" />
   </ItemGroup>
-  <Import Project="$(RedBoltRoot)/src/RedBolt/Build/TestIntegration.targets" Condition="'$(RedBoltExternalTestIntegrationImported)' != 'true'" />
+  <Import Project="$(RedBoltRoot)/eng/RedBolt.ModuleBuild/TestIntegration.targets" Condition="'$(RedBoltExternalTestIntegrationImported)' != 'true'" />
 </Project>

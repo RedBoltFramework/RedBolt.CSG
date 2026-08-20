@@ -10,5 +10,5 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
     <RedBoltExternalPackageRepositoryUrl>https://github.com/RedBoltFramework/RedBolt.CSG.git</RedBoltExternalPackageRepositoryUrl>
     <RedBoltExternalPackageTags>RedBolt game-engine csharp dotnet csg constructive-solid-geometry</RedBoltExternalPackageTags>
   </PropertyGroup>
-  <Import Project="../../../RedBolt/src/RedBolt/Build/NuGetPackage.targets" />
+  <Import Project="../../../RedBolt/eng/RedBolt.ModuleBuild/NuGetPackage.targets" />
 </Project>
