@@ -1,0 +1,16 @@
+{
+  "name": "RedBolt.CSG",
+  "applicationId": "org.redbolt.csg.samples",
+  "web": true,
+  "android": true,
+  "projectReferences": [
+    "src/RedBolt/CSG/RedBolt.CSG.csproj",
+    "../RedBolt/src/RedBolt/DearImGui/RedBolt.DearImGui.csproj"
+  ],
+  "webPInvokeModules": [
+    "RedBolt.Native.DearImGui"
+  ],
+  "samples": [
+    { "id": "csg", "name": "Constructive Solid Geometry", "applicationType": "RedBolt.Sample.CSG.CsgShowcase", "source": "CSG" }
+  ]
+}
