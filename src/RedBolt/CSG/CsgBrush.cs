@@ -47,7 +47,7 @@ public partial class CsgBrush : CsgComponent
     }
 
     /// <summary>Get or set boolean operation used when combining this brush with the current CSG result.</summary>
-    [Serialized("Operation")]
+    [Serialized("Operation", EnumNames = ["Union", "DifferenceAB", "Intersection"])]
     public CsgOperation Operation
     {
         get => _operation;
