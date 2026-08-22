@@ -140,7 +140,8 @@ public static partial class Csg
 
             geometry.GetRawDataShared(out var vertexData, out var vertexSize, out var indexData, out var indexSize,
                 out var elements);
-            if (vertexData is null || elements is null)
+            if (vertexData is null || elements is null || vertexSize == 0
+                || geometry.GetPrimitiveType() != PrimitiveType.TriangleList)
                 continue;
 
             // Element lookup table
@@ -148,30 +149,53 @@ public static partial class Csg
             foreach (var element in elements)
                 elementPointers[((int)element.Semantic << 2) + element.Index] = element;
 
-            var indexCount = geometry.GetIndexCount();
-            for (var j = 0u; j < indexCount; j += 3)
+            if (indexData is not null && indexSize is not (2 or 4))
+                continue;
+
+            var indexCount = indexData is null ? geometry.GetVertexCount() : geometry.GetIndexCount();
+            var indexStart = geometry.GetIndexStart();
+            if (indexData is not null)
+            {
+                var availableIndexCount = checked((uint)indexData.Length) / indexSize;
+                if (indexStart > availableIndexCount || indexCount > availableIndexCount - indexStart)
+                    continue;
+            }
+
+            var vertexStart = geometry.GetVertexStart();
+            for (var j = 0u; j + 2 < indexCount; j += 3)
             {
                 uint i0;
                 uint i1;
                 uint i2;
                 if (indexData is null)
                 {
-                    i0 = j;
-                    i1 = j + 1;
-                    i2 = j + 2;
+                    i0 = vertexStart + j;
+                    i1 = vertexStart + j + 1;
+                    i2 = vertexStart + j + 2;
                 }
                 else if (indexSize == 2)
                 {
-                    i0 = BinaryPrimitives.ReadUInt16LittleEndian(indexData.AsSpan(checked((int)(j * indexSize))));
-                    i1 = BinaryPrimitives.ReadUInt16LittleEndian(indexData.AsSpan(checked((int)((j + 1) * indexSize))));
-                    i2 = BinaryPrimitives.ReadUInt16LittleEndian(indexData.AsSpan(checked((int)((j + 2) * indexSize))));
+                    i0 = BinaryPrimitives.ReadUInt16LittleEndian(
+                        indexData.AsSpan(checked((int)((indexStart + j) * indexSize))));
+                    i1 = BinaryPrimitives.ReadUInt16LittleEndian(
+                        indexData.AsSpan(checked((int)((indexStart + j + 1) * indexSize))));
+                    i2 = BinaryPrimitives.ReadUInt16LittleEndian(
+                        indexData.AsSpan(checked((int)((indexStart + j + 2) * indexSize))));
                 }
                 else
                 {
-                    i0 = BinaryPrimitives.ReadUInt32LittleEndian(indexData.AsSpan(checked((int)(j * indexSize))));
-                    i1 = BinaryPrimitives.ReadUInt32LittleEndian(indexData.AsSpan(checked((int)((j + 1) * indexSize))));
-                    i2 = BinaryPrimitives.ReadUInt32LittleEndian(indexData.AsSpan(checked((int)((j + 2) * indexSize))));
+                    i0 = BinaryPrimitives.ReadUInt32LittleEndian(
+                        indexData.AsSpan(checked((int)((indexStart + j) * indexSize))));
+                    i1 = BinaryPrimitives.ReadUInt32LittleEndian(
+                        indexData.AsSpan(checked((int)((indexStart + j + 1) * indexSize))));
+                    i2 = BinaryPrimitives.ReadUInt32LittleEndian(
+                        indexData.AsSpan(checked((int)((indexStart + j + 2) * indexSize))));
                 }
+
+                var vertexDataLength = checked((uint)vertexData.Length);
+                if (i0 >= vertexDataLength / vertexSize || i1 >= vertexDataLength / vertexSize
+                    || i2 >= vertexDataLength / vertexSize)
+                    continue;
 
                 var vertices = new List<ModelVertex>(3);
                 foreach (var index in new[] { i0, i1, i2 })
