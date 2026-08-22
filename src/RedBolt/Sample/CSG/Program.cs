@@ -134,7 +134,7 @@ public class CsgShowcase : Application
         parameters.ApplicationName = "RedBolt.Sample.CSG";
         parameters.Borderless = false;
         parameters.FullScreen = false;
-        parameters.ResourcePaths = "CoreData;Data";
+        parameters.ResourcePaths = "Data.CSG;CoreData;Data";
         parameters.ResourcePrefixPaths = ".;..";
         parameters.WindowMaximize = false;
 #if !REDBOLT_PLATFORM_BROWSER
