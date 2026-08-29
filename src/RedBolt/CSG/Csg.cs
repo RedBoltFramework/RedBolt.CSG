@@ -23,6 +23,23 @@ public enum CsgOperation
 
 public static partial class Csg
 {
+    internal sealed class PreparedModel
+    {
+        public BoundingBox BoundingBox;
+        public List<PreparedGeometry> Geometries = [];
+    }
+
+    internal sealed class PreparedGeometry
+    {
+        public uint Shared;
+        public uint VertexCount;
+        public List<VertexElement> VertexElements = [];
+        public byte[] VertexData = [];
+        public uint IndexCount;
+        public bool LargeIndices;
+        public byte[] IndexData = [];
+    }
+
     private static uint PackSharedKey(uint meshId, uint geometryIndex)
     {
         return (meshId << 16) | (geometryIndex & 0xffffu);
@@ -83,6 +100,57 @@ public static partial class Csg
 
         VertexBuffer.UpdateOffsets(elements);
         return elements;
+    }
+
+    internal static Dictionary<uint, List<VertexElement>> GetSourceVertexElements(
+        IReadOnlyList<Model?> sourceModels)
+    {
+        var result = new Dictionary<uint, List<VertexElement>>();
+        for (var meshIndex = 0; meshIndex < sourceModels.Count; ++meshIndex)
+        {
+            var model = sourceModels[meshIndex];
+            var geometryCount = model?.GetNumGeometries() ?? 0;
+            for (var geometryIndex = 0u; geometryIndex < geometryCount; ++geometryIndex)
+            {
+                result[PackSharedKey(checked((uint)meshIndex), geometryIndex)] =
+                    GetSupportedVertexElements(model?.GetGeometry(geometryIndex, 0));
+            }
+        }
+        return result;
+    }
+
+    internal static PreparedModel PrepareModel(CsgTriangulatedModel triangulated,
+        IReadOnlyDictionary<uint, List<VertexElement>> sourceVertexElements)
+    {
+        var result = new PreparedModel { BoundingBox = triangulated.BoundingBox };
+        if (!triangulated.HasAnyVertex)
+            return result;
+
+        foreach (var source in triangulated.Geometries)
+        {
+            var vertexCount = checked((uint)source.Vertices.Count);
+            var indexCount = checked((uint)source.IndexData.Count);
+            if (vertexCount == 0 || indexCount == 0)
+                continue;
+
+            var elements = sourceVertexElements.TryGetValue(source.Shared, out var sourceElements)
+                ? sourceElements
+                : GetSupportedVertexElements(null);
+            var largeIndices = vertexCount > 0xffffu;
+            var packedIndices = new byte[checked((int)(indexCount * (largeIndices ? 4u : 2u)))];
+            IndexBuffer.PackIndexData(source.IndexData.ToArray(), packedIndices, largeIndices, 0, indexCount);
+            result.Geometries.Add(new PreparedGeometry
+            {
+                Shared = source.Shared,
+                VertexCount = vertexCount,
+                VertexElements = elements,
+                VertexData = PackVerticesToLayout(source.Vertices, elements),
+                IndexCount = indexCount,
+                LargeIndices = largeIndices,
+                IndexData = packedIndices
+            });
+        }
+        return result;
     }
 
     private static byte[] PackVerticesToLayout(IReadOnlyList<ModelVertex> vertices,
@@ -351,41 +419,39 @@ public static partial class Csg
     public static Model BuildModel(CsgTriangulatedModel triangulated, IReadOnlyList<Model?> sourceModels,
         IReadOnlyList<ResourceRefList?> sourceMaterials, ref ResourceRefList? outMaterials)
     {
+        var sourceVertexElements = GetSourceVertexElements(sourceModels);
+        var prepared = PrepareModel(triangulated, sourceVertexElements);
+        return BuildModel(prepared, sourceMaterials, ref outMaterials);
+    }
+
+    internal static Model BuildModel(PreparedModel prepared, IReadOnlyList<ResourceRefList?> sourceMaterials,
+        ref ResourceRefList? outMaterials)
+    {
         if (outMaterials is not null)
             outMaterials = new ResourceRefList(ObjectReflection<Material>.TypeId);
 
-        if (triangulated.Geometries.Count == 0 || !triangulated.HasAnyVertex)
+        if (prepared.Geometries.Count == 0)
             return new Model();
 
-        var modelVertexBuffers = new List<VertexBuffer>(triangulated.Geometries.Count);
-        var modelIndexBuffers = new List<IndexBuffer>(triangulated.Geometries.Count);
-        var modelGeometries = new List<Geometry>(triangulated.Geometries.Count);
+        var modelVertexBuffers = new List<VertexBuffer>(prepared.Geometries.Count);
+        var modelIndexBuffers = new List<IndexBuffer>(prepared.Geometries.Count);
+        var modelGeometries = new List<Geometry>(prepared.Geometries.Count);
 
-        foreach (var source in triangulated.Geometries)
+        foreach (var source in prepared.Geometries)
         {
-            var vertexCount = checked((uint)source.Vertices.Count);
-            if (vertexCount == 0 || source.IndexData.Count == 0)
-                continue;
-
             var (meshId, geometryIndex) = UnpackSharedKey(source.Shared);
-
-            var sourceModel = meshId < sourceModels.Count ? sourceModels[(int)meshId] : null;
-            var sourceGeometry = sourceModel?.GetGeometry(geometryIndex, 0);
-            var vertexBufferElements = GetSupportedVertexElements(sourceGeometry);
 
             var vertexBuffer = new VertexBuffer();
             vertexBuffer.SetShadowed(true);
-            if (!vertexBuffer.SetSize(vertexCount, vertexBufferElements))
+            if (!vertexBuffer.SetSize(source.VertexCount, source.VertexElements))
                 continue;
 
-            var packedVertices = PackVerticesToLayout(source.Vertices, vertexBufferElements);
-            vertexBuffer.Update(packedVertices);
+            vertexBuffer.Update(source.VertexData);
 
-            var largeIndices = vertexCount > 0xffffu;
             var indexBuffer = new IndexBuffer();
             indexBuffer.SetShadowed(true);
-            indexBuffer.SetSize(checked((uint)source.IndexData.Count), largeIndices);
-            indexBuffer.SetUnpackedData(source.IndexData);
+            indexBuffer.SetSize(source.IndexCount, source.LargeIndices);
+            indexBuffer.Update(source.IndexData);
 
             var geometry = new Geometry();
             geometry.SetNumVertexBuffers(1);
@@ -419,7 +485,7 @@ public static partial class Csg
         outModel.SetNumGeometries(checked((uint)modelGeometries.Count));
         for (var i = 0; i < modelGeometries.Count; ++i)
             outModel.SetGeometry(checked((uint)i), 0, modelGeometries[i]);
-        outModel.SetBoundingBox(triangulated.BoundingBox);
+        outModel.SetBoundingBox(prepared.BoundingBox);
 
         return outModel;
     }

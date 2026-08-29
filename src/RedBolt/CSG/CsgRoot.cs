@@ -73,6 +73,14 @@ public partial class CsgRoot : CsgComponent
 
         public List<Model?> SourceModels = [];
         public List<ResourceRefList?> SourceMaterials = [];
+        public Dictionary<uint, List<VertexElement>> SourceVertexElements = [];
+    }
+
+    private sealed class PendingBuildResult
+    {
+        public required Model Model;
+        public ResourceRefList Materials = new();
+        public uint Revision;
     }
 
     private static Node? GetOrCreateTemporaryChild(Node? parent, string name)
@@ -94,10 +102,10 @@ public partial class CsgRoot : CsgComponent
         if (staticModel is null)
             return;
 
-        var numGeometries = staticModel.GetNumGeometries();
-        for (var i = 0u; i < numGeometries; ++i)
+        var numGeometries = checked((int)staticModel.GetNumGeometries());
+        for (var i = 0; i < numGeometries; ++i)
         {
-            var material = i < materials.Count ? materials[(int)i] : null;
+            var material = i < materials.Count ? materials[i] : null;
             staticModel.SetMaterial(i, material);
         }
     }
@@ -107,6 +115,40 @@ public partial class CsgRoot : CsgComponent
 
     public CsgRoot()
     {
+    }
+
+    /// <summary>Whether completed rebuilds are applied to the output model immediately.</summary>
+    /// <remarks>
+    /// Disable this to synchronize a visual effect with a rebuild. Completed results are queued and may be
+    /// committed in revision order with <see cref="ApplyPendingResult"/>.
+    /// </remarks>
+    public bool AutoApplyResults { get; set; } = true;
+
+    /// <summary>Current rebuild revision. It changes whenever an input changes.</summary>
+    public uint RebuildRevision => _rebuildRequestId;
+
+    /// <summary>Whether a completed result is waiting to be applied.</summary>
+    public bool HasPendingResult => _pendingResults.Count != 0;
+
+    /// <summary>Revision of the oldest completed result, or zero when no result is pending.</summary>
+    public uint PendingResultRevision => _pendingResults.TryPeek(out var result) ? result.Revision : 0;
+
+    /// <summary>Apply the oldest completed result queued while <see cref="AutoApplyResults"/> was disabled.</summary>
+    /// <returns>Whether a pending result was applied.</returns>
+    public bool ApplyPendingResult()
+    {
+        if (!_pendingResults.TryDequeue(out var result))
+            return false;
+
+        ApplyResultToOutput(result.Model, result.Materials);
+        return true;
+    }
+
+    public override void Dispose()
+    {
+        while (_pendingResults.TryDequeue(out var result))
+            result.Model.Dispose();
+        base.Dispose();
     }
 
     /// <summary>Rebuild immediately, ignoring scheduling policy.</summary>
@@ -177,12 +219,18 @@ public partial class CsgRoot : CsgComponent
             return;
         }
 
+        // Graphics resources are inspected on the main thread. The worker uses this immutable layout snapshot
+        // to do all expensive vertex and index packing without touching graphics objects.
+        job.SourceVertexElements = Csg.GetSourceVertexElements(job.SourceModels);
+
         var workQueue = GetSubsystem<WorkQueue>();
         _rebuildInFlight = true;
         _rebuildInFlightId = job.BuildId;
         _rebuildDirty = false;
 
-        workQueue.PostTask((threadIndex, queue) => ExecuteBuildJob(threadIndex, queue, job), TaskPriority.High);
+        // Rebuilds are interactive background work. Medium priority keeps expensive boolean operations from
+        // competing with frame-critical high-priority work while preserving the asynchronous workflow.
+        workQueue.PostTask((threadIndex, queue) => ExecuteBuildJob(threadIndex, queue, job), TaskPriority.Medium);
     }
 
     /// <summary>Get or set debounce delay for rebuild scheduling. Values below 0 are clamped to 0.</summary>
@@ -725,14 +773,17 @@ public partial class CsgRoot : CsgComponent
         CsgTriangulatedModel? triangulated = null;
         if (resultPolygons.Count != 0)
             triangulated = Csg.TriangulatePolygons(resultPolygons, job.Epsilon);
+        var prepared = triangulated is not null
+            ? Csg.PrepareModel(triangulated, job.SourceVertexElements)
+            : null;
         var elapsed = timer.GetUSec();
         Log.GetLogger().LogDebug("CsgRoot({ComponentId}): rebuild took {Milliseconds}.{Microseconds}ms",
             job.ComponentId, elapsed / 1000, elapsed % 1000);
 
-        queue.PostDelayedTaskForMainThread(() => ApplyBuildJobResultOnMainThread(job, triangulated));
+        queue.PostDelayedTaskForMainThread(() => ApplyBuildJobResultOnMainThread(job, prepared));
     }
 
-    private static void ApplyBuildJobResultOnMainThread(BuildJob job, CsgTriangulatedModel? triangulated)
+    private static void ApplyBuildJobResultOnMainThread(BuildJob job, Csg.PreparedModel? prepared)
     {
         if (job.Root is null || !job.Root.TryGetTarget(out var root))
             return;
@@ -752,7 +803,7 @@ public partial class CsgRoot : CsgComponent
 
         var materials = new ResourceRefList();
         Model renderableModel;
-        if (triangulated is null)
+        if (prepared is null)
         {
             // Triangulation failed or resulted in empty output.
             renderableModel = new Model();
@@ -760,14 +811,24 @@ public partial class CsgRoot : CsgComponent
         else
         {
             ResourceRefList? outputMaterials = materials;
-            renderableModel = Csg.BuildModel(triangulated, job.SourceModels, job.SourceMaterials, ref outputMaterials);
+            renderableModel = Csg.BuildModel(prepared, job.SourceMaterials, ref outputMaterials);
             materials = outputMaterials!.Value;
         }
 
-        root.ApplyResultToOutput(renderableModel, materials);
-
         // Acknowledge changes.
         AcknowledgeBrushes(job.RootStep);
+
+        if (root.AutoApplyResults)
+            root.ApplyResultToOutput(renderableModel, materials);
+        else
+        {
+            root._pendingResults.Enqueue(new PendingBuildResult
+            {
+                Model = renderableModel,
+                Materials = materials,
+                Revision = job.BuildId
+            });
+        }
     }
 
     private static List<CsgPolygon> EvaluateBooleanPolygons(List<CsgPolygon> a, List<CsgPolygon> b,
@@ -869,6 +930,7 @@ public partial class CsgRoot : CsgComponent
     private WeakReference<StaticModel>? _tempBase;
     private readonly List<WeakReference<Node>> _listenedNodes = [];
     private readonly List<WeakReference<CsgBrush>> _brushes = [];
+    private readonly Queue<PendingBuildResult> _pendingResults = [];
 
     private uint _ignoreChildDirtyFrame;
 }
