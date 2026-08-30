@@ -11,6 +11,6 @@
     "RedBolt.Native.DearImGui"
   ],
   "samples": [
-    { "id": "csg", "name": "Constructive Solid Geometry", "applicationType": "RedBolt.Sample.CSG.CsgShowcase", "source": "CSG" }
+    { "id": "csg", "name": "Constructive Solid Geometry", "applicationType": "RedBolt.Sample.CSG.CsgShowcase", "source": "CSG", "mobileHelp": "Drag to look. Use the direction pad to move.", "mobileMovement": "wasd", "mobileControls": [{"label": "Sprint", "key": "Shift"}, {"label": "Fire", "mouseButton": "Left"}, {"label": "Mud", "mouseButton": "Right"}] }
   ]
 }
