@@ -42,7 +42,6 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
       background: rgb(17 21 28 / 80%);
     }
     #runner a { color: #9dc8ff; }
-    body.mobile #runner header #result { display: none; }
     #canvas {
       position: absolute;
       inset: 0;
@@ -81,64 +80,6 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
       border: 0;
     }
     #fullscreen-button:hover { fill: #999; cursor: pointer; }
-    #mobile-controls {
-      position: fixed;
-      z-index: 3;
-      inset: 0;
-      pointer-events: none;
-      user-select: none;
-      -webkit-user-select: none;
-    }
-    #mobile-controls[hidden] { display: none; }
-    #mobile-help {
-      position: absolute;
-      top: 0.5rem;
-      right: 0.5rem;
-      max-width: min(22rem, calc(100vw - 7rem));
-      padding: 0.5rem 0.7rem;
-      border-radius: 0.5rem;
-      background: rgb(17 21 28 / 82%);
-      pointer-events: auto;
-    }
-    #mobile-help summary { cursor: pointer; font-weight: 600; }
-    #mobile-help p { margin: 0.45rem 0 0; font-size: 0.9rem; }
-    #mobile-dpad, #mobile-actions {
-      position: absolute;
-      bottom: max(0.75rem, env(safe-area-inset-bottom));
-      display: grid;
-      gap: 0.35rem;
-      pointer-events: auto;
-    }
-    #mobile-dpad {
-      left: max(0.75rem, env(safe-area-inset-left));
-      grid-template: repeat(3, 3.4rem) / repeat(3, 3.4rem);
-    }
-    #mobile-actions {
-      right: max(0.75rem, env(safe-area-inset-right));
-      grid-template-columns: repeat(2, minmax(4.2rem, auto));
-      align-content: end;
-    }
-    #mobile-controls button {
-      width: auto;
-      min-width: 3.4rem;
-      min-height: 3.4rem;
-      margin: 0;
-      padding: 0.45rem;
-      border: 1px solid rgb(255 255 255 / 45%);
-      border-radius: 0.65rem;
-      color: #fff;
-      background: rgb(17 21 28 / 68%);
-      touch-action: none;
-    }
-    #mobile-controls button.active { background: rgb(82 137 204 / 88%); }
-    #mobile-up { grid-column: 2; grid-row: 1; }
-    #mobile-left { grid-column: 1; grid-row: 2; }
-    #mobile-down { grid-column: 2; grid-row: 3; }
-    #mobile-right { grid-column: 3; grid-row: 2; }
-    @media (max-height: 480px) {
-      #mobile-dpad { grid-template: repeat(3, 3rem) / repeat(3, 3rem); }
-      #mobile-controls button { min-width: 3rem; min-height: 3rem; font-size: 0.8rem; }
-    }
   </style>
 </head>
 <body>
@@ -150,7 +91,7 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
       <p>Choose a sample to load in WebAssembly.</p>
       <select id="sample" aria-label="Sample">
         <!-- <redbolt-generated name="web-sample-options"> -->
-        <option value="csg" data-application="RedBolt.Sample.CSG.CsgShowcase" data-mobile-help="Drag to look. Use the direction pad to move." data-mobile-movement="wasd" data-mobile-controls="key|Shift|Sprint;mouse|Left|Fire;mouse|Right|Mud">Constructive Solid Geometry</option>
+        <option value="csg" data-application="RedBolt.Sample.CSG.CsgShowcase">Constructive Solid Geometry</option>
         <!-- </redbolt-generated name="web-sample-options"> -->
       </select>
       <button id="load" type="button">Load sample</button>
@@ -161,14 +102,6 @@ For a copy, see <https://opensource.org/licenses/MIT> or the accompanying LICENS
         <span id="result" data-status="loading">Loading…</span>
       </header>
       <canvas id="canvas" tabindex="-1"></canvas>
-      <div id="mobile-controls" hidden>
-        <details id="mobile-help" open>
-          <summary>Touch controls</summary>
-          <p id="mobile-help-text"></p>
-        </details>
-        <div id="mobile-dpad" aria-label="Movement controls"></div>
-        <div id="mobile-actions" aria-label="Action controls"></div>
-      </div>
       <div id="loading">
         <div id="status">Downloading...</div>
         <progress hidden id="progress" max="100" value="10"></progress>
