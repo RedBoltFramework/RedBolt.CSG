@@ -69,6 +69,13 @@ public class CsgShowcase : Application
     protected override void Start()
     {
         base.Start();
+        _sampleInput = new SampleInputMap(movement: true);
+        _sampleInput.AddMouseButton("Explosive", MouseButton.Left, ControllerButton.A, "BOOM");
+        _sampleInput.AddMouseButton("Mud", MouseButton.Right, ControllerButton.B, "MUD", 1);
+        _sampleInput.AddButton("Sprint", Scancode.LeftShift, ControllerButton.RightShoulder, "RUN", 2);
+        _sampleInput.Map.MapKeyboardKey("Sprint", Scancode.RightShift);
+        _sampleInput.Map.MapControllerAxis("LookX", ControllerAxis.RightX, 0.0f, 1.0f);
+        _sampleInput.Map.MapControllerAxis("LookY", ControllerAxis.RightY, 0.0f, 1.0f);
         Csg.RegisterCsgLibrary(Context);
         Context.RegisterSubsystem(new DearImGui((ImGuiConfigFlags)Engine.Parameters.DearImGuiFlags));
 
@@ -310,7 +317,7 @@ public class CsgShowcase : Application
 
     protected override void Update(float timeStep)
     {
-        if (Input.ExitRequested || Input.GetKeyPress(Key.Escape))
+        if (Input.ExitRequested || _sampleInput!.Pressed("Exit"))
         {
             Exit();
             return;
@@ -321,9 +328,9 @@ public class CsgShowcase : Application
         ApplyArrivedProjectileResults();
         UpdateImpactEffects(timeStep);
 
-        if (Input.GetMouseButtonPress(MouseButton.Left))
+        if (_sampleInput.Pressed("Explosive"))
             FireProjectile(false);
-        if (Input.GetMouseButtonPress(MouseButton.Right))
+        if (_sampleInput.Pressed("Mud"))
             FireProjectile(true);
 
         _recoil = MathF.Max(0.0f, _recoil - timeStep * 7.0f);
@@ -333,21 +340,22 @@ public class CsgShowcase : Application
     private void UpdateCamera(float timeStep)
     {
         var mouseMove = Input.GetMouseMove();
-        _yaw += mouseMove.X * MouseSensitivity;
-        _pitch = Math.Clamp(_pitch + mouseMove.Y * MouseSensitivity, -82.0f, 82.0f);
+        _yaw += mouseMove.X * MouseSensitivity + _sampleInput!.Evaluate("LookX") * timeStep * 120.0f;
+        _pitch = Math.Clamp(_pitch + mouseMove.Y * MouseSensitivity +
+            _sampleInput.Evaluate("LookY") * timeStep * 120.0f, -82.0f, 82.0f);
         _cameraNode!.SetRotation(new Quaternion(_pitch, _yaw, 0.0f));
 
         var movement = Vector3f.Zero;
-        if (Input.GetScancodeDown(Scancode.W)) movement += Vector3f.Forward;
-        if (Input.GetScancodeDown(Scancode.S)) movement += Vector3f.Back;
-        if (Input.GetScancodeDown(Scancode.A)) movement += Vector3f.Left;
-        if (Input.GetScancodeDown(Scancode.D)) movement += Vector3f.Right;
+        movement += Vector3f.Forward * _sampleInput.Evaluate("Forward");
+        movement += Vector3f.Back * _sampleInput.Evaluate("Back");
+        movement += Vector3f.Left * _sampleInput.Evaluate("Left");
+        movement += Vector3f.Right * _sampleInput.Evaluate("Right");
         if (movement.LengthSquared <= 0.0f)
             return;
 
         movement.Normalize();
         var heading = new Quaternion(0.0f, _yaw, 0.0f);
-        var speed = Input.GetKeyDown(Key.Shift) ? SprintSpeed : WalkSpeed;
+        var speed = _sampleInput.Evaluate("Sprint") > 0.0f ? SprintSpeed : WalkSpeed;
         var position = _cameraNode.Position + heading * movement * (speed * timeStep);
         position.X = Math.Clamp(position.X, -9.45f, 9.45f);
         position.Y = EyeHeight;
@@ -584,6 +592,8 @@ public class CsgShowcase : Application
 
     protected override void Stop()
     {
+        _sampleInput?.Dispose();
+        _sampleInput = null;
         Renderer.SetNumViewports(0);
         base.Stop();
     }
@@ -689,5 +699,6 @@ public class CsgShowcase : Application
     private float _yaw;
     private float _pitch;
     private float _recoil;
+    private SampleInputMap? _sampleInput;
     private static readonly Vector2f PromptIconSize = new(24.0f, 24.0f);
 }
