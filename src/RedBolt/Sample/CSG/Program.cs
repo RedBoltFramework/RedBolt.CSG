@@ -94,6 +94,16 @@ public class CsgShowcase : Application
         _explosivePrompt = Resources.Get<Texture2D>("ThirdParty/KenneyInputPrompts/mouse_left.png");
         _mudPrompt = Resources.Get<Texture2D>("ThirdParty/KenneyInputPrompts/mouse_right.png");
         _exitPrompt = Resources.Get<Texture2D>("ThirdParty/KenneyInputPrompts/keyboard_escape.png");
+        _gamepadPrompts =
+        [
+            SampleInputMap.GetControllerPrompt(ControllerButton.LeftStick),
+            SampleInputMap.GetControllerPrompt(ControllerButton.RightStick),
+            SampleInputMap.GetControllerPrompt(ControllerButton.RightShoulder),
+            SampleInputMap.GetControllerPrompt(ControllerButton.A),
+            SampleInputMap.GetControllerPrompt(ControllerButton.B),
+            SampleInputMap.GetControllerPrompt(ControllerButton.Back)
+        ];
+        _touchLookPrompt = Resources.Get<Texture2D>("ThirdParty/KenneyInputPrompts/touch_swipe_move.png");
         SubscribeToEvent<DearImGuiEvents.EndRenderingDearImGuiEvent>(
             (ref DearImGuiEvents.EndRenderingDearImGuiEvent _) => DrawInstructions());
 
@@ -339,10 +349,24 @@ public class CsgShowcase : Application
 
     private void UpdateCamera(float timeStep)
     {
-        var mouseMove = Input.GetMouseMove();
-        _yaw += mouseMove.X * MouseSensitivity + _sampleInput!.Evaluate("LookX") * timeStep * 120.0f;
-        _pitch = Math.Clamp(_pitch + mouseMove.Y * MouseSensitivity +
-            _sampleInput.Evaluate("LookY") * timeStep * 120.0f, -82.0f, 82.0f);
+        var mouseMove = Input.ActiveInputDevice == InputDeviceType.Touch
+            ? Vector2i.Zero
+            : Input.GetMouseMove();
+        var look = new Vector2f(mouseMove.X, mouseMove.Y) * MouseSensitivity;
+        if (Input.ActiveInputDevice == InputDeviceType.Touch)
+        {
+            var backbufferWidth = Input.GetBackbufferSize().X;
+            for (var i = 0u; i < Input.GetNumTouches(); ++i)
+            {
+                var touch = Input.GetTouch(i)!.Value;
+                if (touch.Position.X >= backbufferWidth / 2
+                    && !_sampleInput!.Overlay.IsTouchCaptured(touch.TouchID))
+                    look += new Vector2f(touch.Delta.X, touch.Delta.Y) * MouseSensitivity;
+            }
+        }
+        _yaw += look.X + _sampleInput!.Evaluate("LookX") * timeStep * 120.0f;
+        _pitch = Math.Clamp(_pitch + look.Y + _sampleInput.Evaluate("LookY") * timeStep * 120.0f,
+            -82.0f, 82.0f);
         _cameraNode!.SetRotation(new Quaternion(_pitch, _yaw, 0.0f));
 
         var movement = Vector3f.Zero;
@@ -607,17 +631,38 @@ public class CsgShowcase : Application
         {
             ImGui.TextUnformatted("INNER WALL TEST CHAMBERS"u8);
             ImGui.Separator();
-            for (var i = 0; i < _movePrompts!.Length - 1; ++i)
+            if (Input.ActiveInputDevice == InputDeviceType.KeyboardMouse)
             {
-                ImGui.Image(_movePrompts[i], PromptIconSize);
-                ImGui.SameLine();
+                for (var i = 0; i < _movePrompts!.Length - 1; ++i)
+                {
+                    ImGui.Image(_movePrompts[i], PromptIconSize);
+                    ImGui.SameLine();
+                }
+                DrawPrompt(_movePrompts[^1], "Move"u8);
+                DrawPrompt(_lookPrompt!, "Look"u8);
+                DrawPrompt(_sprintPrompt!, "Sprint"u8);
+                DrawPrompt(_explosivePrompt!, "Explosive: subtract from inner walls"u8);
+                DrawPrompt(_mudPrompt!, "Mud: add to any structural surface"u8);
+                DrawPrompt(_exitPrompt!, "Exit"u8);
             }
-            DrawPrompt(_movePrompts[^1], "Move"u8);
-            DrawPrompt(_lookPrompt!, "Look (always active)"u8);
-            DrawPrompt(_sprintPrompt!, "Sprint"u8);
-            DrawPrompt(_explosivePrompt!, "Explosive: subtract from inner walls"u8);
-            DrawPrompt(_mudPrompt!, "Mud: add to any structural surface"u8);
-            DrawPrompt(_exitPrompt!, "Exit"u8);
+            else
+            {
+                DrawPrompt(Input.ActiveInputDevice == InputDeviceType.Touch
+                    ? SampleInputMap.GetMovementPrompt()
+                    : _gamepadPrompts![0], Input.ActiveInputDevice == InputDeviceType.Touch
+                    ? "Drag left side to move"u8
+                    : "Move"u8);
+                DrawPrompt(Input.ActiveInputDevice == InputDeviceType.Touch
+                    ? _touchLookPrompt!
+                    : _gamepadPrompts![1], Input.ActiveInputDevice == InputDeviceType.Touch
+                    ? "Swipe right side to look"u8
+                    : "Look"u8);
+                DrawPrompt(_gamepadPrompts![2], "Sprint"u8);
+                DrawPrompt(_gamepadPrompts[3], "Explosive: subtract from inner walls"u8);
+                DrawPrompt(_gamepadPrompts[4], "Mud: add to any structural surface"u8);
+                if (Input.ActiveInputDevice == InputDeviceType.Joystick)
+                    DrawPrompt(_gamepadPrompts[5], "Exit"u8);
+            }
             ImGui.TextUnformatted("Orange trim marks destructible partitions"u8);
         }
         ImGui.End();
@@ -696,6 +741,8 @@ public class CsgShowcase : Application
     private Texture2D? _explosivePrompt;
     private Texture2D? _mudPrompt;
     private Texture2D? _exitPrompt;
+    private Texture2D[]? _gamepadPrompts;
+    private Texture2D? _touchLookPrompt;
     private float _yaw;
     private float _pitch;
     private float _recoil;
