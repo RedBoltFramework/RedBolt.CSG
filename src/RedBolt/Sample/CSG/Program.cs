@@ -667,8 +667,8 @@ public class CsgShowcase : Application
         }
         ImGui.End();
 
-        using var viewport = ImGui.GetMainViewport();
-        using var drawList = ImGui.GetForegroundDrawList(viewport);
+        var viewport = ImGui.GetMainViewport();
+        var drawList = ImGui.GetForegroundDrawList(viewport);
         var center = new Vector2f(Graphics.Width * 0.5f, Graphics.Height * 0.5f);
         const float gap = 4.0f;
         const float length = 11.0f;
