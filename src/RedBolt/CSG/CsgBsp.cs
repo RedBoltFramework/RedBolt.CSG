@@ -290,7 +290,7 @@ public sealed class BspNode
         return result;
     }
 
-    private static void SplitPolygon(CsgPolygon poly, Plane plane, out CsgPolygon frontPoly,
+    internal static void SplitPolygon(CsgPolygon poly, Plane plane, out CsgPolygon frontPoly,
         out CsgPolygon backPoly, float epsilon)
     {
         frontPoly = new CsgPolygon();

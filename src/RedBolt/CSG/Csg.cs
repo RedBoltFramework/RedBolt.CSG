@@ -340,6 +340,31 @@ public static partial class Csg
         return polygons;
     }
 
+    /// <summary>Compute a boolean operation on reusable polygonal solids.</summary>
+    /// <remarks>
+    /// The face BVHs find surfaces that meet. Whole connected regions without a surface intersection
+    /// are classified once; only regions at the intersection frontier enter local BSP clipping.
+    /// </remarks>
+    public static CsgSolid BooleanOperation(CsgSolid a, CsgSolid b, CsgOperation operation,
+        float epsilon = CsgCommon.DefaultEpsilon)
+    {
+        ArgumentNullException.ThrowIfNull(a);
+        ArgumentNullException.ThrowIfNull(b);
+        if (epsilon <= 0.0f)
+            epsilon = CsgCommon.DefaultEpsilon;
+        var result = new CsgSolid(a.Boolean(b, operation, epsilon), epsilon, false);
+        // Local plane arrangements may become non-manifold near near-coincident edges. Preserve
+        // the established BSP result until those degeneracies can be resolved topologically.
+        if (result.FaceCount != 0 && !result.IsClosed && a.IsClosed && b.IsClosed)
+            return a.BooleanWithBsp(b, operation, epsilon);
+        return result;
+    }
+
+    /// <summary>Extract a reusable polygonal solid from a model in the supplied local frame.</summary>
+    public static CsgSolid BuildSolidFromModel(Model? model, Matrix3x4 transform, uint meshId = 0,
+        float epsilon = CsgCommon.DefaultEpsilon) =>
+        new(BuildPolygonsFromModel(model, transform, meshId), epsilon);
+
     /// <summary>Compute CSG boolean operation between two BSP operands and return resulting polygons.</summary>
     /// <remarks><paramref name="epsilon"/> is used consistently for BSP clipping in this operation.</remarks>
     public static List<CsgPolygon> BooleanOperation(CsgBsp bspA, CsgBsp bspB, CsgOperation operation,

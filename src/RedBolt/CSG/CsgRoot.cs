@@ -56,9 +56,13 @@ public partial class CsgRoot : CsgComponent
         public ResourceRefList Materials = new();
         public uint MeshId;
         public CsgOperation Operation;
+        public Matrix3x4 Transform;
         public WeakReference<CsgBrush>? Brush;
         public List<BrushStep> Children = [];
     }
+
+    private readonly record struct BrushFingerprint(CsgBrush Brush, Model? Model, Matrix3x4 Transform,
+        uint MeshId, CsgOperation Operation);
 
     private sealed class BuildJob
     {
@@ -70,6 +74,10 @@ public partial class CsgRoot : CsgComponent
         public Model? BaseModel;
         public ResourceRefList BaseMaterials = new();
         public BrushStep RootStep = new();
+        public CsgSolid? CachedSolid;
+        public CsgSolid? ResultSolid;
+        public int ReusedRootChildren;
+        public List<BrushFingerprint> FlatBrushes = [];
 
         public List<Model?> SourceModels = [];
         public List<ResourceRefList?> SourceMaterials = [];
@@ -148,6 +156,9 @@ public partial class CsgRoot : CsgComponent
     {
         while (_pendingResults.TryDequeue(out var result))
             result.Model.Dispose();
+        _cachedSolid = null;
+        _cachedBaseModel = null;
+        _cachedBrushes.Clear();
         base.Dispose();
     }
 
@@ -202,22 +213,49 @@ public partial class CsgRoot : CsgComponent
         job.SourceModels.Add(job.BaseModel);
         job.SourceMaterials.Add(job.BaseMaterials.Clone());
 
-        // Extract base polygons in CsgRoot local space on the main thread.
+        // The base model is extracted only if the prior solid cannot be reused.
         job.RootStep.Model = job.BaseModel;
         job.RootStep.Materials = job.BaseMaterials.Clone();
         job.RootStep.MeshId = 0;
-        job.RootStep.Polygons = Csg.BuildPolygonsFromModel(job.BaseModel, Matrix3x4.Identity, 0);
 
         // Build operation tree recursively starting from root node.
         var invRootWorld = node.GetWorldTransform().Inverse;
         if (!BuildOperationTree(job.RootStep, node, invRootWorld, tempB, job.SourceModels, job.SourceMaterials))
         {
             // No operations: return base model directly.
+            _cachedSolid = null;
+            _cachedBrushes.Clear();
             var baseMaterials = tempBase.GetMaterialsAttr().Clone();
             ApplyResultToOutput(tempBase.GetModel(), baseMaterials);
             _rebuildDirty = false;
             return;
         }
+
+        // Reuse only for an append to a flat tree. A same-length rebuild may reflect an in-place
+        // model edit even if the resource object and brush references have not changed.
+        if (TryCaptureFlatBrushes(job.RootStep, job.FlatBrushes)
+            && _cachedSolid is not null
+            && ReferenceEquals(job.BaseModel, _cachedBaseModel)
+            && job.Epsilon == _cachedEpsilon
+            && _cachedBrushes.Count < job.FlatBrushes.Count)
+        {
+            var prefixUnchanged = true;
+            for (var i = 0; i < _cachedBrushes.Count; ++i)
+            {
+                if (_cachedBrushes[i] != job.FlatBrushes[i] || job.FlatBrushes[i].Brush.IsDirty)
+                {
+                    prefixUnchanged = false;
+                    break;
+                }
+            }
+            if (prefixUnchanged)
+            {
+                job.CachedSolid = _cachedSolid;
+                job.ReusedRootChildren = _cachedBrushes.Count;
+            }
+        }
+        if (job.CachedSolid is null)
+            job.RootStep.Polygons = Csg.BuildPolygonsFromModel(job.BaseModel, Matrix3x4.Identity, 0);
 
         // Graphics resources are inspected on the main thread. The worker uses this immutable layout snapshot
         // to do all expensive vertex and index packing without touching graphics objects.
@@ -391,6 +429,8 @@ public partial class CsgRoot : CsgComponent
     protected override void OnModelChanged()
     {
         base.OnModelChanged();
+        _cachedSolid = null;
+        _cachedBrushes.Clear();
         RequestRebuild();
     }
 
@@ -744,6 +784,7 @@ public partial class CsgRoot : CsgComponent
 
                 // Extract polygons in CsgRoot local space (main thread).
                 var brushToRoot = invRootWorld * child.GetWorldTransform();
+                step.Transform = brushToRoot;
                 step.Polygons = Csg.BuildPolygonsFromModel(step.Model, brushToRoot, step.MeshId);
 
                 // Recurse into the brush subtree.
@@ -760,16 +801,30 @@ public partial class CsgRoot : CsgComponent
         return rootStep.Children.Count != 0;
     }
 
+    private static bool TryCaptureFlatBrushes(BrushStep rootStep, List<BrushFingerprint> output)
+    {
+        foreach (var child in rootStep.Children)
+        {
+            if (child.Children.Count != 0 || child.Brush is null
+                || !child.Brush.TryGetTarget(out var brush))
+            {
+                output.Clear();
+                return false;
+            }
+            output.Add(new BrushFingerprint(brush, child.Model, child.Transform, child.MeshId, child.Operation));
+        }
+        return true;
+    }
+
     private static void ExecuteBuildJob(int threadIndex, WorkQueue queue, BuildJob job)
     {
         _ = threadIndex;
 
-        var resultPolygons = new List<CsgPolygon>(job.RootStep.Polygons.Count);
-        foreach (var polygon in job.RootStep.Polygons)
-            resultPolygons.Add(polygon.Clone());
-
         var timer = new HiresTimer();
-        EvaluateOperationTree(job.RootStep, ref resultPolygons, job.Epsilon);
+        var resultSolid = job.CachedSolid ?? new CsgSolid(job.RootStep.Polygons, job.Epsilon);
+        EvaluateOperationTree(job.RootStep, ref resultSolid, job.Epsilon, job.ReusedRootChildren);
+        job.ResultSolid = resultSolid;
+        var resultPolygons = resultSolid.ToPolygons();
         CsgTriangulatedModel? triangulated = null;
         if (resultPolygons.Count != 0)
             triangulated = Csg.TriangulatePolygons(resultPolygons, job.Epsilon);
@@ -817,6 +872,12 @@ public partial class CsgRoot : CsgComponent
 
         // Acknowledge changes.
         AcknowledgeBrushes(job.RootStep);
+        root._cachedSolid = job.FlatBrushes.Count == job.RootStep.Children.Count ? job.ResultSolid : null;
+        root._cachedBaseModel = job.BaseModel;
+        root._cachedEpsilon = job.Epsilon;
+        root._cachedBrushes.Clear();
+        if (root._cachedSolid is not null)
+            root._cachedBrushes.AddRange(job.FlatBrushes);
 
         if (root.AutoApplyResults)
             root.ApplyResultToOutput(renderableModel, materials);
@@ -831,60 +892,17 @@ public partial class CsgRoot : CsgComponent
         }
     }
 
-    private static List<CsgPolygon> EvaluateBooleanPolygons(List<CsgPolygon> a, List<CsgPolygon> b,
-        CsgOperation operation, float epsilon)
+    private static void EvaluateOperationTree(BrushStep step, ref CsgSolid currentSolid, float epsilon,
+        int startChild = 0)
     {
-        // Handle empty operands explicitly to avoid treating "empty BSP" as a hard failure.
-        if (a.Count == 0 && b.Count == 0)
-            return [];
-
-        if (a.Count == 0)
+        for (var childIndex = startChild; childIndex < step.Children.Count; ++childIndex)
         {
-            switch (operation)
-            {
-                case CsgOperation.Union:
-                    return b;
-                case CsgOperation.DifferenceAB:
-                    return [];
-                case CsgOperation.Intersection:
-                    return [];
-            }
-        }
-
-        if (b.Count == 0)
-        {
-            switch (operation)
-            {
-                case CsgOperation.Union:
-                    return a;
-                case CsgOperation.DifferenceAB:
-                    return a;
-                case CsgOperation.Intersection:
-                    return [];
-            }
-        }
-
-        var bspA = new CsgBsp();
-        bspA.Build(a, epsilon);
-        var bspB = new CsgBsp();
-        bspB.Build(b, epsilon);
-        if (!bspA.IsBuilt || !bspB.IsBuilt)
-            return [];
-
-        return Csg.BooleanOperation(bspA, bspB, operation, epsilon);
-    }
-
-    private static void EvaluateOperationTree(BrushStep step, ref List<CsgPolygon> currentPolygons, float epsilon)
-    {
-        foreach (var child in step.Children)
-        {
-            var childPolygons = new List<CsgPolygon>(child.Polygons.Count);
-            foreach (var polygon in child.Polygons)
-                childPolygons.Add(polygon.Clone());
+            var child = step.Children[childIndex];
+            var childSolid = new CsgSolid(child.Polygons, epsilon);
             if (child.Children.Count != 0)
-                EvaluateOperationTree(child, ref childPolygons, epsilon);
+                EvaluateOperationTree(child, ref childSolid, epsilon);
 
-            currentPolygons = EvaluateBooleanPolygons(currentPolygons, childPolygons, child.Operation, epsilon);
+            currentSolid = Csg.BooleanOperation(currentSolid, childSolid, child.Operation, epsilon);
         }
     }
 
@@ -923,6 +941,10 @@ public partial class CsgRoot : CsgComponent
     private uint _rebuildRequestId = 1;
     private uint _rebuildInFlightId;
     private bool _rebuildInFlight;
+    private CsgSolid? _cachedSolid;
+    private Model? _cachedBaseModel;
+    private float _cachedEpsilon;
+    private readonly List<BrushFingerprint> _cachedBrushes = [];
 
     private WeakReference<StaticModel>? _output;
     private WeakReference<Node>? _tempNode;
