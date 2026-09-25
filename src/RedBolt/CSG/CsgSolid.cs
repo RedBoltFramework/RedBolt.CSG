@@ -74,8 +74,8 @@ public sealed class CsgSolid
             var max = new Vec3(float.NegativeInfinity);
             for (var c = componentStart[component]; c < componentStart[component + 1]; ++c)
             {
-                min = Vec3.Min(min, faceMin[componentFaces[c]]);
-                max = Vec3.Max(max, faceMax[componentFaces[c]]);
+                min = Vec3.MinNative(min, faceMin[componentFaces[c]]);
+                max = Vec3.MaxNative(max, faceMax[componentFaces[c]]);
             }
             componentMin[component] = min;
             componentMax[component] = max;
@@ -119,8 +119,8 @@ public sealed class CsgSolid
             foreach (ref readonly var vertex in vertices)
             {
                 var point = Position(vertex);
-                min = Vec3.Min(min, point);
-                max = Vec3.Max(max, point);
+                min = Vec3.MinNative(min, point);
+                max = Vec3.MaxNative(max, point);
             }
             _faceMin[i] = min;
             _faceMax[i] = max;
@@ -199,8 +199,8 @@ public sealed class CsgSolid
         var max = new Vec3(float.NegativeInfinity);
         for (var i = 0; i < faceMin.Length; ++i)
         {
-            min = Vec3.Min(min, faceMin[i]);
-            max = Vec3.Max(max, faceMax[i]);
+            min = Vec3.MinNative(min, faceMin[i]);
+            max = Vec3.MaxNative(max, faceMax[i]);
         }
         return (min, max);
     }
@@ -313,6 +313,9 @@ public sealed class CsgSolid
             AdjacencyStart.Add(AdjacentFaces.Count);
         }
     }
+
+    /// <summary>Build a face tree over every face; for builder benchmarks.</summary>
+    internal int BuildFaceTreeForBenchmark() => new FaceBvh(_faceMin, _faceMax).Nodes.Length;
 
     /// <summary>Faces owned by this solid. Callers must not modify them or their vertex attribute arrays.</summary>
     internal IReadOnlyList<CsgPolygon> Faces => _faces;
@@ -805,10 +808,10 @@ public sealed class CsgSolid
     {
         var t0 = (min - origin) * inverse;
         var t1 = (max - origin) * inverse;
-        var near = Vec3.Min(t0, t1);
-        var far = Vec3.Max(t0, t1);
-        var enter = MathF.Max(MathF.Max(near.X, near.Y), MathF.Max(near.Z, 0.0f));
-        var exit = MathF.Min(far.X, MathF.Min(far.Y, far.Z));
+        var near = Vec3.MinNative(t0, t1);
+        var far = Vec3.MaxNative(t0, t1);
+        var enter = float.MaxNative(float.MaxNative(near.X, near.Y), float.MaxNative(near.Z, 0.0f));
+        var exit = float.MinNative(far.X, float.MinNative(far.Y, far.Z));
         return enter <= exit;
     }
 
@@ -1014,10 +1017,10 @@ public sealed class CsgSolid
             var pb0 = Vec3.Dot(b0, axis);
             var pb1 = Vec3.Dot(b1, axis);
             var pb2 = Vec3.Dot(b2, axis);
-            var aMin = MathF.Min(pa0, MathF.Min(pa1, pa2));
-            var aMax = MathF.Max(pa0, MathF.Max(pa1, pa2));
-            var bMin = MathF.Min(pb0, MathF.Min(pb1, pb2));
-            var bMax = MathF.Max(pb0, MathF.Max(pb1, pb2));
+            var aMin = float.MinNative(pa0, float.MinNative(pa1, pa2));
+            var aMax = float.MaxNative(pa0, float.MaxNative(pa1, pa2));
+            var bMin = float.MinNative(pb0, float.MinNative(pb1, pb2));
+            var bMax = float.MaxNative(pb0, float.MaxNative(pb1, pb2));
             var tolerance = epsilon * MathF.Sqrt(lengthSquared);
             return aMax < bMin - tolerance || bMax < aMin - tolerance;
         }
@@ -1136,7 +1139,7 @@ public sealed class CsgSolid
                     var points = welder.Positions.AsSpan(0, welder.Count).ToArray();
                     pointBvh = new FaceBvh(points, points);
                 }
-                pointBvh.CollectBox(Vec3.Min(start, end), Vec3.Max(start, end), epsilon, nearby);
+                pointBvh.CollectBox(Vec3.MinNative(start, end), Vec3.MaxNative(start, end), epsilon, nearby);
                 cuts.Clear();
                 foreach (var item in nearby)
                 {
@@ -1323,7 +1326,7 @@ public sealed class CsgSolid
     private sealed class FaceBvh
     {
         private const int MaxLeafSize = 4;
-        private const int BinCount = 12;
+        private const int BinCount = 8;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct Node
@@ -1400,8 +1403,7 @@ public sealed class CsgSolid
             UpdateBounds(primitives, ref Nodes[0]);
 
             // Bins for all three axes, filled in one pass over the node's items.
-            Span<Vector128<float>> binMin = stackalloc Vector128<float>[3 * BinCount];
-            Span<Vector128<float>> binMax = stackalloc Vector128<float>[3 * BinCount];
+            Span<Vector256<float>> bins = stackalloc Vector256<float>[3 * BinCount];
             Span<int> binCount = stackalloc int[3 * BinCount];
             Span<float> rightArea = stackalloc float[BinCount];
             Span<int> rightCount = stackalloc int[BinCount];
@@ -1417,15 +1419,17 @@ public sealed class CsgSolid
                 var first = node.First;
                 var end = first + node.Count;
 
-                CentroidBounds(primitives.AsSpan(first, end - first), out var centroidMin, out var centroidMax);
-                var extent = centroidMax - centroidMin;
+                // Bin doubled centroids (min + max) over the doubled node box, as TinyBVH's AVX builder does;
+                // this skips a pass that would compute tighter centroid bounds.
+                var centroidMin = node.Min + node.Min;
+                var extent = (node.Max - node.Min) * 2.0f;
                 // A flat axis gets scale zero: every item falls in bin 0 and the axis offers no split.
                 var scale = new Vec3(
                     extent.X > 0.0f ? BinCount / extent.X : 0.0f,
                     extent.Y > 0.0f ? BinCount / extent.Y : 0.0f,
                     extent.Z > 0.0f ? BinCount / extent.Z : 0.0f);
 
-                FillBins(primitives.AsSpan(first, end - first), centroidMin, scale, binMin, binMax, binCount);
+                FillBins(primitives.AsSpan(first, end - first), centroidMin, scale, bins, binCount);
 
                 var bestAxis = -1;
                 var bestSplit = 0;
@@ -1441,8 +1445,8 @@ public sealed class CsgSolid
                     var sweepCount = 0;
                     for (var bin = BinCount - 1; bin > 0; --bin)
                     {
-                        sweepMin = Vec3.Min(sweepMin, binMin[offset + bin].AsVector3());
-                        sweepMax = Vec3.Max(sweepMax, binMax[offset + bin].AsVector3());
+                        sweepMin = Vec3.MinNative(sweepMin, -bins[offset + bin].GetLower().AsVector3());
+                        sweepMax = Vec3.MaxNative(sweepMax, bins[offset + bin].GetUpper().AsVector3());
                         sweepCount += binCount[offset + bin];
                         rightMin[bin] = sweepMin;
                         rightMax[bin] = sweepMax;
@@ -1454,8 +1458,8 @@ public sealed class CsgSolid
                     sweepCount = 0;
                     for (var bin = 0; bin < BinCount - 1; ++bin)
                     {
-                        sweepMin = Vec3.Min(sweepMin, binMin[offset + bin].AsVector3());
-                        sweepMax = Vec3.Max(sweepMax, binMax[offset + bin].AsVector3());
+                        sweepMin = Vec3.MinNative(sweepMin, -bins[offset + bin].GetLower().AsVector3());
+                        sweepMax = Vec3.MaxNative(sweepMax, bins[offset + bin].GetUpper().AsVector3());
                         sweepCount += binCount[offset + bin];
                         if (sweepCount == 0 || rightCount[bin + 1] == 0)
                             continue;
@@ -1508,48 +1512,55 @@ public sealed class CsgSolid
             }
         }
 
-        private static void CentroidBounds(ReadOnlySpan<Primitive> primitives, out Vec3 min, out Vec3 max)
-        {
-            min = new Vec3(float.PositiveInfinity);
-            max = new Vec3(float.NegativeInfinity);
-            foreach (ref readonly var primitive in primitives)
-            {
-                var center = primitive.Center;
-                min = Vec3.Min(min, center);
-                max = Vec3.Max(max, center);
-            }
-        }
-
         /// <remarks>
-        /// Bins are 16-byte vectors: consecutive primitives usually land in the same bin, and a 12-byte
-        /// <see cref="Vec3"/> store cannot forward to the following load, which stalls every update.
+        /// Each bin is one 256-bit box holding (-min, max), as in TinyBVH's AVX builder, so growing a bin is a
+        /// single <see cref="Vector256.MaxNative{T}"/>. Primitives share the layout: their lower half is min with the
+        /// item index in lane 3, which a sign flip turns into -min; lanes 3 and 7 are ignored.
         /// </remarks>
         private static void FillBins(ReadOnlySpan<Primitive> primitives, Vec3 centroidMin, Vec3 scale,
-            Span<Vector128<float>> binMin, Span<Vector128<float>> binMax, Span<int> binCount)
+            Span<Vector256<float>> bins, Span<int> binCount)
         {
-            binMin.Fill(Vector128.Create(float.PositiveInfinity));
-            binMax.Fill(Vector128.Create(float.NegativeInfinity));
+            bins.Fill(Vector256.Create(float.NegativeInfinity));
             binCount.Clear();
-            var limit = new Vec3(BinCount - 1);
-            foreach (ref readonly var primitive in primitives)
+            var negateMin = Vector256.Create(-0.0f, -0.0f, -0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+            var origin = centroidMin.AsVector128();
+            var scale4 = scale.AsVector128();
+            var lastBin = Vector128.Create(BinCount - 1);
+            var offsets = Vector128.Create(0, BinCount, 2 * BinCount, 0);
+            ref var bin0 = ref MemoryMarshal.GetReference(bins);
+            ref var count0 = ref MemoryMarshal.GetReference(binCount);
+            ref var item = ref Unsafe.As<Primitive, Vector256<float>>(ref MemoryMarshal.GetReference(primitives));
+
+            // Software pipelined like TinyBVH's AVX binning: the next box and its bins are computed while the
+            // current box updates its three bins, hiding the load-max-store latency of repeated bins.
+            var box = item;
+            var bin = BinOf(box);
+            for (var i = 1; i < primitives.Length; ++i)
             {
-                var min = primitive.Min;
-                var max = primitive.Max;
-                var bin = Vec3.Min((min + max - centroidMin) * scale, limit);
-                var min4 = min.AsVector128();
-                var max4 = max.AsVector128();
-                Add((int)bin.X, min4, max4, binMin, binMax, binCount);
-                Add(BinCount + (int)bin.Y, min4, max4, binMin, binMax, binCount);
-                Add(2 * BinCount + (int)bin.Z, min4, max4, binMin, binMax, binCount);
+                var nextBox = Unsafe.Add(ref item, i);
+                var nextBin = BinOf(nextBox);
+                Grow(ref bin0, ref count0, bin.GetElement(0), box ^ negateMin);
+                Grow(ref bin0, ref count0, bin.GetElement(1), box ^ negateMin);
+                Grow(ref bin0, ref count0, bin.GetElement(2), box ^ negateMin);
+                box = nextBox;
+                bin = nextBin;
             }
+            Grow(ref bin0, ref count0, bin.GetElement(0), box ^ negateMin);
+            Grow(ref bin0, ref count0, bin.GetElement(1), box ^ negateMin);
+            Grow(ref bin0, ref count0, bin.GetElement(2), box ^ negateMin);
+
+            // Clamped as integers: rounding can leave a centroid just below the origin, and a NaN box converts
+            // to int.MinValue; either would index outside the bins.
+            Vector128<int> BinOf(Vector256<float> value) =>
+                Vector128.Clamp(Vector128.ConvertToInt32((value.GetLower() + value.GetUpper() - origin) * scale4),
+                    Vector128<int>.Zero, lastBin) + offsets;
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            static void Add(int bin, Vector128<float> min, Vector128<float> max, Span<Vector128<float>> binMin,
-                Span<Vector128<float>> binMax, Span<int> binCount)
+            static void Grow(ref Vector256<float> bins, ref int counts, int index, Vector256<float> value)
             {
-                ++binCount[bin];
-                binMin[bin] = Vector128.Min(binMin[bin], min);
-                binMax[bin] = Vector128.Max(binMax[bin], max);
+                ++Unsafe.Add(ref counts, index);
+                ref var target = ref Unsafe.Add(ref bins, index);
+                target = Vector256.MaxNative(target, value);
             }
         }
 
@@ -1578,8 +1589,8 @@ public sealed class CsgSolid
             var max = new Vec3(float.NegativeInfinity);
             for (var i = node.First; i < node.First + node.Count; ++i)
             {
-                min = Vec3.Min(min, primitives[i].Min);
-                max = Vec3.Max(max, primitives[i].Max);
+                min = Vec3.MinNative(min, primitives[i].Min);
+                max = Vec3.MaxNative(max, primitives[i].Max);
             }
             node.Min = min;
             node.Max = max;
