@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>RedBolt.CSG.Performance</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants Condition="'$(CsgBenchmarkOriginal)' == 'true'">$(DefineConstants);ORIGINAL</DefineConstants>
+    <RedBoltCSGRoot Condition="'$(RedBoltCSGRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../..'))</RedBoltCSGRoot>
+    <RedBoltRoot Condition="'$(RedBoltRoot)' == ''">$([System.IO.Path]::GetFullPath('$(RedBoltCSGRoot)/../RedBolt'))</RedBoltRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Aliases.cs" />
+    <Compile Include="WorkerProgram.cs" />
+    <Compile Include="Baseline/**/*.cs" Condition="'$(CsgBenchmarkOriginal)' == 'true'" />
+    <ProjectReference Include="$(RedBoltRoot)/src/RedBolt/Core/RedBolt.Core.csproj" />
+    <ProjectReference Include="$(RedBoltCSGRoot)/src/RedBolt/CSG/RedBolt.CSG.csproj"
+                      Condition="'$(CsgBenchmarkOriginal)' != 'true'" />
+  </ItemGroup>
+</Project>

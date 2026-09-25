@@ -1,0 +1,17 @@
+model=CoreData/Models/Sphere.mdl;bounds=-0.4999999 -0.5 -0.49999994 - 0.5 0.5 0.5
+variant=tinybvh;shape=sphere;dotnet=10.0.12;cpu=1;worker=true;tieredCompilation=0;samples=15
+case=disjoint1_union;inputA=1280;inputB=1280;faces=2560;volume=1.038172
+case=disjoint16_union;inputA=20480;inputB=20480;faces=40960;volume=16.610864
+case=contained_difference;inputA=1280;inputB=1280;faces=2560;volume=0.406963
+case=overlap_difference;inputA=1280;inputB=1280;faces=2730;volume=0.415089
+case=local_cut16_difference;inputA=20480;inputB=1280;faces=30178;volume=8.201393
+disjoint1_union,full,45.3658,44.6294,47.1334,25501472,119560
+disjoint1_union,append,40.5973,39.7055,40.8331,20848856,119560
+disjoint16_union,full,6134.2203,6023.3606,6542.0203,420458952,1912960
+disjoint16_union,append,5943.9984,5897.4915,6063.3204,342489688,1912960
+contained_difference,full,47.2061,45.1904,49.6527,26532880,119560
+contained_difference,append,42.6971,42.0929,43.1877,21880264,119560
+overlap_difference,full,143.2335,141.5604,144.9282,117801208,82887
+overlap_difference,append,135.0844,132.8560,135.9682,113148592,82887
+local_cut16_difference,full,3453.2605,3436.1475,3463.4826,804157696,988153
+local_cut16_difference,append,3339.4026,3327.1427,3395.7755,726188440,988153

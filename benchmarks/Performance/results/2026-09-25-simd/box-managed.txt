@@ -1,0 +1,16 @@
+variant=current;shape=box;dotnet=10.0.12;cpu=1;worker=true;tieredCompilation=0;samples=15
+case=disjoint1_union;inputA=6;inputB=6;faces=12;volume=2.000000
+case=disjoint16_union;inputA=96;inputB=96;faces=192;volume=32.000000
+case=contained_difference;inputA=6;inputB=6;faces=12;volume=0.784000
+case=overlap_difference;inputA=6;inputB=6;faces=9;volume=0.725375
+case=local_cut16_difference;inputA=96;inputB=6;faces=99;volume=15.725375
+disjoint1_union,full,0.0814,0.0805,0.0895,109880,804
+disjoint1_union,append,0.0707,0.0697,0.0729,102912,804
+disjoint16_union,full,1.0223,1.0199,1.0274,1414168,12864
+disjoint16_union,append,0.8664,0.8622,0.8806,1331160,12864
+contained_difference,full,0.0568,0.0560,0.0607,61920,804
+contained_difference,append,0.0457,0.0449,0.0466,53864,804
+overlap_difference,full,0.1760,0.1734,0.1787,165032,729
+overlap_difference,append,0.1634,0.1620,0.1686,156976,729
+local_cut16_difference,full,0.6715,0.6651,0.6740,864272,6759
+local_cut16_difference,append,0.5133,0.5077,0.5231,778680,6759

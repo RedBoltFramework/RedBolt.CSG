@@ -1,0 +1,17 @@
+model=/home/rk/src/RedBolt/RedBolt/bin/CoreData/Models/Sphere.mdl;bounds=-0.4999999 -0.5 -0.49999994 - 0.5 0.5 0.5
+variant=current;shape=sphere;dotnet=10.0.12;cpu=1;worker=true;tieredCompilation=0;samples=15
+case=disjoint1_union;inputA=1280;inputB=1280;faces=2560;volume=1.038172
+case=disjoint16_union;inputA=20480;inputB=20480;faces=40960;volume=16.610864
+case=contained_difference;inputA=1280;inputB=1280;faces=2560;volume=0.406963
+case=overlap_difference;inputA=1280;inputB=1280;faces=1355;volume=0.415088
+case=local_cut16_difference;inputA=20480;inputB=1280;faces=20555;volume=8.201393
+disjoint1_union,full,5.6279,5.5364,6.0066,5468432,119560
+disjoint1_union,append,4.4061,4.3900,4.5153,4811112,119560
+disjoint16_union,full,159.1669,150.4882,165.6442,87378008,1912960
+disjoint16_union,append,85.9111,82.9245,90.7693,76840680,1912960
+contained_difference,full,7.0736,7.0169,7.6948,5969088,119560
+contained_difference,append,5.2849,5.2563,5.5721,5183136,119560
+overlap_difference,full,10.6880,10.6281,11.1604,7053888,85235
+overlap_difference,append,9.2294,8.9767,10.4339,6267936,85235
+local_cut16_difference,full,65.8492,61.9030,68.4670,48019232,981935
+local_cut16_difference,append,34.0823,33.9149,38.0315,37351840,981935

@@ -1,0 +1,5 @@
+model=/home/rk/src/RedBolt/RedBolt/bin/CoreData/Models/Sphere.mdl;bounds=-0.4999999 -0.5 -0.49999994 - 0.5 0.5 0.5
+builder=TinyBvhAvx;samples=31
+faces=1280,build,0.3476,0.2839,0.3576
+faces=20480,build,5.1853,4.9040,10.1677
+faces=81920,build,24.3634,21.9065,33.2967
