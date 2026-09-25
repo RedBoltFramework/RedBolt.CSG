@@ -18,6 +18,13 @@ public enum CsgClipMode
     ClipToOutside
 }
 
+/// <summary>Convex or concave planar polygon used by the CSG pipeline.</summary>
+/// <remarks>
+/// Inside the CSG pipeline, the <see cref="ModelVertex.Color"/> and <see cref="ModelVertex.Uv"/> arrays of
+/// vertices are shared between polygon copies and must be treated as immutable: replace a vertex instead of
+/// writing into those arrays. <see cref="Clone"/>, <see cref="CsgSolid.ToPolygons"/> and triangulated output
+/// return independent copies for callers that edit attributes.
+/// </remarks>
 public sealed class CsgPolygon : ICloneable
 {
     public List<ModelVertex> Vertices = [];
@@ -44,12 +51,23 @@ public sealed class CsgPolygon : ICloneable
             Plane = Plane
         };
         result.Vertices.EnsureCapacity(Vertices.Count);
-        foreach (var vertex in Vertices)
-            result.Vertices.Add(vertex.Clone());
+        foreach (ref readonly var vertex in System.Runtime.InteropServices.CollectionsMarshal.AsSpan(Vertices))
+            result.Vertices.Add(CsgCommon.CloneVertex(vertex));
         return result;
     }
 
     object ICloneable.Clone() => Clone();
+
+    /// <summary>
+    /// Copy the polygon with its own vertex list while sharing each vertex's color and UV arrays.
+    /// CSG treats those arrays as immutable, so the copy can be flipped, split or extended safely.
+    /// </summary>
+    internal CsgPolygon CloneShared() => new()
+    {
+        Vertices = new List<ModelVertex>(Vertices),
+        Shared = Shared,
+        Plane = Plane
+    };
 
     public void Flip()
     {
@@ -317,12 +335,12 @@ public sealed class BspNode
 
         if (backCount == 0)
         {
-            frontPoly = poly.Clone();
+            frontPoly = poly.CloneShared();
             return;
         }
         if (frontCount == 0)
         {
-            backPoly = poly.Clone();
+            backPoly = poly.CloneShared();
             return;
         }
 
@@ -345,17 +363,17 @@ public sealed class BspNode
             var v1Back = d1 <= epsilon;
 
             if (v1Front)
-                frontPoly.Vertices.Add(v1.Clone());
+                frontPoly.Vertices.Add(v1);
             if (v1Back)
-                backPoly.Vertices.Add(v1.Clone());
+                backPoly.Vertices.Add(v1);
 
             var crossing = d1 > epsilon && d2 < -epsilon || d1 < -epsilon && d2 > epsilon;
             if (crossing)
             {
                 var t = SystemMath.Clamp(d1 / (d1 - d2), 0.0f, 1.0f);
                 var mid = CsgCommon.LerpModelVertex(v1, v2, t);
-                frontPoly.Vertices.Add(mid.Clone());
-                backPoly.Vertices.Add(mid.Clone());
+                frontPoly.Vertices.Add(mid);
+                backPoly.Vertices.Add(mid);
             }
         }
     }
@@ -433,7 +451,7 @@ public sealed class BspNode
     {
         var result = new List<CsgPolygon>(polygons.Count);
         foreach (var polygon in polygons)
-            result.Add(polygon.Clone());
+            result.Add(polygon.CloneShared());
         return result;
     }
 }
@@ -565,7 +583,7 @@ public sealed class CsgBsp
         if (node is null)
             return;
         foreach (var polygon in node.Polygons)
-            result.Add(polygon.Clone());
+            result.Add(polygon.CloneShared());
         CollectPolygons(node.Front, result);
         CollectPolygons(node.Back, result);
     }
@@ -574,7 +592,7 @@ public sealed class CsgBsp
     {
         var result = new List<CsgPolygon>(polygons.Count);
         foreach (var polygon in polygons)
-            result.Add(polygon.Clone());
+            result.Add(polygon.CloneShared());
         return result;
     }
 }

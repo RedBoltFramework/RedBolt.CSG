@@ -167,7 +167,7 @@ public static partial class Csg
 
         var sourceUnpacked = new Vector4f[checked(vertices.Count * ModelVertex.VertexElements.Length)];
         for (var i = 0; i < vertices.Count; ++i)
-            vertices[i].Data().CopyTo(sourceUnpacked, i * ModelVertex.VertexElements.Length);
+            WriteUnpacked(vertices[i], sourceUnpacked.AsSpan(i * ModelVertex.VertexElements.Length));
 
         var destinationUnpacked = new Vector4f[checked(vertices.Count * elements.Count)];
         VertexBuffer.ShuffleUnpackedVertexData(vertexCount, sourceUnpacked, ModelVertex.VertexElements,
@@ -181,6 +181,19 @@ public static partial class Csg
         }
 
         return packed;
+    }
+
+    // Same element order as ModelVertex.Data() and ModelVertex.VertexElements, without a temporary array.
+    private static void WriteUnpacked(in ModelVertex vertex, Span<Vector4f> output)
+    {
+        output[0] = vertex.Position;
+        output[1] = vertex.Normal;
+        output[2] = vertex.Tangent;
+        output[3] = vertex.Binormal;
+        output[4] = vertex.BlendIndices;
+        output[5] = vertex.BlendWeights;
+        vertex.Color.AsSpan(0, ModelVertex.MaxColors).CopyTo(output[6..]);
+        vertex.Uv.AsSpan(0, ModelVertex.MaxUVs).CopyTo(output[(6 + ModelVertex.MaxColors)..]);
     }
 
     /// <summary>Extract CSG polygons from a <see cref="Model"/> operand.</summary>
@@ -352,7 +365,7 @@ public static partial class Csg
         ArgumentNullException.ThrowIfNull(b);
         if (epsilon <= 0.0f)
             epsilon = CsgCommon.DefaultEpsilon;
-        var result = new CsgSolid(a.Boolean(b, operation, epsilon), epsilon, false);
+        var result = a.Boolean(b, operation, epsilon);
         // Local plane arrangements may become non-manifold near near-coincident edges. Preserve
         // the established BSP result until those degeneracies can be resolved topologically.
         if (result.FaceCount != 0 && !result.IsClosed && a.IsClosed && b.IsClosed)

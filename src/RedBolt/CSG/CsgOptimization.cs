@@ -40,11 +40,110 @@ public static partial class Csg
         public int EdgeB1;
     }
 
-    private sealed class PlaneGroup
+    /// <summary>
+    /// Uniform grid over (unit normal, D) that returns the same group as a linear
+    /// <see cref="AreCoplanarOriented"/> scan. Cells are at least twice the match tolerance in every
+    /// dimension, so any match lies in the home cell or a direct neighbor.
+    /// </summary>
+    private sealed class PlaneGroupIndex
     {
-        public Plane Plane;
-        public uint Shared;
-        public List<CsgPolygon> Polys = [];
+        private readonly record struct Key(uint Shared, int X, int Y, int Z, long D);
+
+        // Cells are keyed by the shared material key too, so candidates always match it.
+        private readonly Dictionary<Key, List<int>> _cells = [];
+        // Representative (first) plane of each group, in creation order.
+        private readonly List<Plane> _planes = [];
+        private readonly float _normalCell;
+        private readonly float _normalTolerance;
+        private readonly double _distanceCell;
+        private readonly double _distanceTolerance;
+
+        public int Count => _planes.Count;
+
+        public PlaneGroupIndex(float normalEps, float epsilon)
+        {
+            // Unit normals with a·b >= 1 - normalEps differ by at most sqrt(2 * normalEps) per component.
+            _normalTolerance = MathF.Sqrt(2.0f * normalEps) * 1.01f;
+            _normalCell = _normalTolerance * 4.0f;
+            _distanceTolerance = epsilon * 1.01;
+            _distanceCell = _distanceTolerance * 4.0;
+        }
+
+        /// <summary>Create a group represented by the polygon's plane and return its index.</summary>
+        public int Add(CsgPolygon polygon)
+        {
+            var groupIndex = _planes.Count;
+            _planes.Add(polygon.Plane);
+            if (!TryGetUnitNormal(polygon.Plane, out var normal))
+                return groupIndex; // Degenerate planes never match, so they are never candidates.
+            var key = new Key(polygon.Shared, Cell(normal.X), Cell(normal.Y), Cell(normal.Z),
+                (long)global::System.Math.Floor(polygon.Plane.D / _distanceCell));
+            if (!_cells.TryGetValue(key, out var list))
+            {
+                list = [];
+                _cells.Add(key, list);
+            }
+            list.Add(groupIndex);
+            return groupIndex;
+        }
+
+        public int FindFirst(CsgPolygon polygon, float normalEps, float epsilon)
+        {
+            if (!TryGetUnitNormal(polygon.Plane, out var normal) || _cells.Count == 0)
+                return -1;
+
+            Range(normal.X, _normalCell, _normalTolerance, out var x0, out var x1);
+            Range(normal.Y, _normalCell, _normalTolerance, out var y0, out var y1);
+            Range(normal.Z, _normalCell, _normalTolerance, out var z0, out var z1);
+            var d = polygon.Plane.D / _distanceCell;
+            var dBase = (long)global::System.Math.Floor(d);
+            var dFraction = d - dBase;
+            var d0 = dFraction * _distanceCell <= _distanceTolerance ? dBase - 1 : dBase;
+            var d1 = (1.0 - dFraction) * _distanceCell <= _distanceTolerance ? dBase + 1 : dBase;
+
+            var best = int.MaxValue;
+            for (var x = x0; x <= x1; ++x)
+            for (var y = y0; y <= y1; ++y)
+            for (var z = z0; z <= z1; ++z)
+            for (var w = d0; w <= d1; ++w)
+            {
+                if (!_cells.TryGetValue(new Key(polygon.Shared, x, y, z, w), out var list))
+                    continue;
+                // Lists are in creation order, so the first match in a cell is that cell's earliest group.
+                foreach (var index in list)
+                {
+                    if (index >= best)
+                        break;
+                    if (AreCoplanarOriented(_planes[index], polygon.Plane, normalEps, epsilon))
+                    {
+                        best = index;
+                        break;
+                    }
+                }
+            }
+            return best == int.MaxValue ? -1 : best;
+        }
+
+        private int Cell(float value) => (int)MathF.Floor(value / _normalCell);
+
+        private static void Range(float value, float cell, float tolerance, out int first, out int last)
+        {
+            var scaled = value / cell;
+            var home = (int)MathF.Floor(scaled);
+            var fraction = scaled - home;
+            first = fraction * cell <= tolerance ? home - 1 : home;
+            last = (1.0f - fraction) * cell <= tolerance ? home + 1 : home;
+        }
+
+        private static bool TryGetUnitNormal(Plane plane, out Vector3f normal)
+        {
+            var lengthSquared = plane.Normal.LengthSquared;
+            normal = default;
+            if (!(lengthSquared > 1e-20f) || !float.IsFinite(lengthSquared) || !float.IsFinite(plane.D))
+                return false;
+            normal = plane.Normal / MathF.Sqrt(lengthSquared);
+            return true;
+        }
     }
 
     private readonly record struct EdgeRef(int PolyIndex, int EdgeStart);
@@ -329,8 +428,8 @@ public static partial class Csg
         var cellSize = ChooseIntersectionGridCellSize(p2, intersectionEps);
         var invCell = 1.0f / cellSize;
 
-        var cellToEdges = new Dictionary<ulong, List<int>>(n * 2);
-        var comparedPairs = new HashSet<ulong>();
+        var cellToEdges = new Dictionary<ulong, List<int>>(n * 2, CsgCommon.PackedKeyComparer.Instance);
+        var comparedPairs = new HashSet<ulong>(CsgCommon.PackedKeyComparer.Instance);
 
         for (var i = 0; i < n; ++i)
         {
@@ -777,7 +876,7 @@ public static partial class Csg
             var ab = a1 - a0;
             var abLenSq = ab.LengthSquared;
 
-            output.Add(poly.Vertices[i].Clone());
+            output.Add(poly.Vertices[i]);
 
             if (abLenSq <= 1e-20f)
                 continue;
@@ -858,7 +957,7 @@ public static partial class Csg
                 return existing;
             var id = (uint)_vertexId.Count;
             _vertexId.Add(qp, id);
-            RepVertex.Add(vertex.Clone());
+            RepVertex.Add(vertex);
             RepPos.Add(p);
             return id;
         }
@@ -899,8 +998,8 @@ public static partial class Csg
             return false;
 
         // Fallback path: make partial colinear overlaps explicit shared edges.
-        var aSplit = a.Clone();
-        var bSplit = b.Clone();
+        var aSplit = a.CloneShared();
+        var bSplit = b.CloneShared();
         SplitPolygonsMutuallyAtOverlaps(aSplit, bSplit, epsilon);
 
         var eps = MathF.Max(epsilon, 1e-6f);
@@ -909,12 +1008,13 @@ public static partial class Csg
         var builder = new BoundaryCancellationBuilder();
         builder.Init(invEps, a.Vertices.Count + b.Vertices.Count);
 
-        var directedCount = new Dictionary<ulong, uint>((a.Vertices.Count + b.Vertices.Count) * 2);
+        var directedCount = new Dictionary<ulong, uint>((a.Vertices.Count + b.Vertices.Count) * 2,
+            CsgCommon.PackedKeyComparer.Instance);
         builder.AddDirectedEdges(aSplit, directedCount);
         builder.AddDirectedEdges(bSplit, directedCount);
 
         // Cancel opposite edges.
-        var visitedUndirected = new HashSet<ulong>();
+        var visitedUndirected = new HashSet<ulong>(CsgCommon.PackedKeyComparer.Instance);
         var boundaryEdges = new List<CanceledEdge>(directedCount.Count);
 
         foreach (var pair in directedCount)
@@ -969,7 +1069,7 @@ public static partial class Csg
         output.Plane = a.Plane;
         output.Vertices.EnsureCapacity(loopIds.Count);
         foreach (var id in loopIds)
-            output.Vertices.Add(builder.RepVertex[(int)id].Clone());
+            output.Vertices.Add(builder.RepVertex[(int)id]);
 
         CleanupPolygonVertices(output, epsilon);
         if (IsDegeneratePolygon(output))
@@ -1011,7 +1111,7 @@ public static partial class Csg
         var i = begin;
         while (i != endExclusive)
         {
-            output.Vertices.Add(vertices[i].Clone());
+            output.Vertices.Add(vertices[i]);
             i = (i + 1) % n;
             if (output.Vertices.Count > n + 1)
                 return false;
@@ -1148,16 +1248,16 @@ public static partial class Csg
         output.Vertices.EnsureCapacity(aCount + bCount - 2);
 
         for (var i = 0; i <= aEdgeStart; ++i)
-            output.Vertices.Add(a.Vertices[i].Clone());
+            output.Vertices.Add(a.Vertices[i]);
 
         for (var k = 0; k < bCount - 2; ++k)
         {
             var index = (bEdgeStart + 2 + k) % bCount;
-            output.Vertices.Add(b.Vertices[index].Clone());
+            output.Vertices.Add(b.Vertices[index]);
         }
 
         for (var i = aEdgeStart + 1; i < aCount; ++i)
-            output.Vertices.Add(a.Vertices[i].Clone());
+            output.Vertices.Add(a.Vertices[i]);
 
         CleanupPolygonVertices(output, epsilon);
         if (IsDegeneratePolygon(output))
@@ -1235,16 +1335,16 @@ public static partial class Csg
         output.Vertices.EnsureCapacity(aCount + bCount - 2);
 
         for (var i = 0; i <= aEdgeStart; ++i)
-            output.Vertices.Add(a.Vertices[i].Clone());
+            output.Vertices.Add(a.Vertices[i]);
 
         for (var k = 0; k < bCount - 2; ++k)
         {
             var index = (bEdgeStart + 2 + k) % bCount;
-            output.Vertices.Add(b.Vertices[index].Clone());
+            output.Vertices.Add(b.Vertices[index]);
         }
 
         for (var i = aEdgeStart + 1; i < aCount; ++i)
-            output.Vertices.Add(a.Vertices[i].Clone());
+            output.Vertices.Add(a.Vertices[i]);
 
         CleanupPolygonVertices(output, epsilon);
         if (IsDegeneratePolygon(output))
@@ -1313,7 +1413,7 @@ public static partial class Csg
         for (var i = 0; i < group.Count; ++i)
             edgesByPoly.Add([]);
 
-        var edgesByDirected = new Dictionary<ulong, List<EdgeRef>>(group.Count * 8);
+        var edgesByDirected = new Dictionary<ulong, List<EdgeRef>>(group.Count * 8, CsgCommon.PackedKeyComparer.Instance);
 
         void RebuildPolyEdges(int polyIndex)
         {
@@ -1475,7 +1575,7 @@ public static partial class Csg
         bool RunPass(bool onlyOpenEdges)
         {
             var vertexId = new Dictionary<Vector3i, uint>(polygons.Count * 16);
-            var undirectedCount = new Dictionary<ulong, uint>();
+            var undirectedCount = new Dictionary<ulong, uint>(CsgCommon.PackedKeyComparer.Instance);
             if (onlyOpenEdges)
             {
                 undirectedCount.EnsureCapacity(polygons.Count * 32);
@@ -1585,7 +1685,15 @@ public static partial class Csg
         return insertedTotal;
     }
 
-    public static bool SimplifyPolygons(List<CsgPolygon> polygons, float epsilon)
+    public static bool SimplifyPolygons(List<CsgPolygon> polygons, float epsilon) =>
+        SimplifyPolygons(polygons, epsilon, false);
+
+    /// <summary>Simplify polygons; with <paramref name="copyOnWrite"/>, polygons are copied before any edit.</summary>
+    /// <remarks>
+    /// Only coplanar groups of two or more polygons are edited, so shared input polygons in singleton
+    /// groups are passed through unchanged and uncopied.
+    /// </remarks>
+    internal static bool SimplifyPolygons(List<CsgPolygon> polygons, float epsilon, bool copyOnWrite)
     {
         // Assumptions:
         // - Input polygons may be in any order; we group by (shared_, oriented plane).
@@ -1605,43 +1713,49 @@ public static partial class Csg
         var normalEps = MathF.Max(1e-4f, epsilon * 0.1f);
         var epsSq = epsilon * epsilon;
 
-        // Step 1: Group by (shared_, oriented plane). No plane canonicalization.
-        var planeGroups = new List<PlaneGroup>(polygons.Count);
-
-        foreach (var polygon in polygons)
+        // Step 1: Group by (shared_, oriented plane). No plane canonicalization. Each polygon joins the
+        // first compatible group in creation order; the index only narrows the groups that are tested.
+        var input = polygons.ToArray();
+        var planeIndex = new PlaneGroupIndex(normalEps, epsilon);
+        var groupOf = new int[input.Length];
+        for (var i = 0; i < input.Length; ++i)
         {
-            var placed = false;
-            foreach (var group in planeGroups)
-            {
-                if (group.Shared == polygon.Shared
-                    && AreCoplanarOriented(group.Plane, polygon.Plane, normalEps, epsilon))
-                {
-                    group.Polys.Add(polygon);
-                    placed = true;
-                    break;
-                }
-            }
-
-            if (!placed)
-            {
-                var group = new PlaneGroup
-                {
-                    Plane = polygon.Plane,
-                    Shared = polygon.Shared
-                };
-                group.Polys.Add(polygon);
-                planeGroups.Add(group);
-            }
+            var groupIndex = planeIndex.FindFirst(input[i], normalEps, epsilon);
+            groupOf[i] = groupIndex >= 0 ? groupIndex : planeIndex.Add(input[i]);
         }
+
+        // Members of each group in input order, as compressed rows.
+        var groupCount = planeIndex.Count;
+        var groupStart = new int[groupCount + 1];
+        foreach (var groupIndex in groupOf)
+            ++groupStart[groupIndex + 1];
+        for (var i = 0; i < groupCount; ++i)
+            groupStart[i + 1] += groupStart[i];
+        var members = new int[input.Length];
+        var fill = groupStart[..^1];
+        for (var i = 0; i < input.Length; ++i)
+            members[fill[groupOf[i]]++] = i;
 
         polygons.Clear();
 
         // Step 2: Per-group conservative merging.
-        foreach (var planeGroup in planeGroups)
+        var group = new List<CsgPolygon>();
+        for (var groupIndex = 0; groupIndex < groupCount; ++groupIndex)
         {
-            var group = planeGroup.Polys;
-            if (group.Count == 0)
+            var first = groupStart[groupIndex];
+            var count = groupStart[groupIndex + 1] - first;
+            if (count == 1)
+            {
+                // A lone polygon has nothing to merge with; only degenerate ones are dropped.
+                var polygon = input[members[first]];
+                if (polygon.Vertices.Count >= 3)
+                    polygons.Add(polygon);
                 continue;
+            }
+
+            group.Clear();
+            for (var i = first; i < first + count; ++i)
+                group.Add(copyOnWrite ? input[members[i]].CloneShared() : input[members[i]]);
 
             // Pass A: Merge polygons that share a full edge (reverse edge match) to a fixpoint.
             MergeByFullEdgesToFixpoint(group, epsilon, normalEps, epsSq);

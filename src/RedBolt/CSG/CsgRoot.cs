@@ -821,13 +821,13 @@ public partial class CsgRoot : CsgComponent
         _ = threadIndex;
 
         var timer = new HiresTimer();
-        var resultSolid = job.CachedSolid ?? new CsgSolid(job.RootStep.Polygons, job.Epsilon);
+        // The job owns its extracted polygons, so solids adopt them without copying.
+        var resultSolid = job.CachedSolid ?? new CsgSolid(job.RootStep.Polygons, job.Epsilon, false);
         EvaluateOperationTree(job.RootStep, ref resultSolid, job.Epsilon, job.ReusedRootChildren);
         job.ResultSolid = resultSolid;
-        var resultPolygons = resultSolid.ToPolygons();
         CsgTriangulatedModel? triangulated = null;
-        if (resultPolygons.Count != 0)
-            triangulated = Csg.TriangulatePolygons(resultPolygons, job.Epsilon);
+        if (resultSolid.FaceCount != 0)
+            triangulated = Csg.TriangulatePolygons(resultSolid.Faces, job.Epsilon);
         var prepared = triangulated is not null
             ? Csg.PrepareModel(triangulated, job.SourceVertexElements)
             : null;
@@ -898,7 +898,7 @@ public partial class CsgRoot : CsgComponent
         for (var childIndex = startChild; childIndex < step.Children.Count; ++childIndex)
         {
             var child = step.Children[childIndex];
-            var childSolid = new CsgSolid(child.Polygons, epsilon);
+            var childSolid = new CsgSolid(child.Polygons, epsilon, false);
             if (child.Children.Count != 0)
                 EvaluateOperationTree(child, ref childSolid, epsilon);
 

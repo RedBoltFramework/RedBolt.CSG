@@ -5,12 +5,34 @@
 namespace RedBolt.CSG;
 
 using System;
+using System.Collections.Generic;
 
 using RedBolt.Graphics;
 using RedBolt.Math;
 
 public static class CsgCommon
 {
+    /// <summary>
+    /// Hashes packed 64-bit keys with a full-avalanche mix. The default <c>ulong</c> hash XORs the two
+    /// halves, so packed index pairs such as edges collapse into few buckets.
+    /// </summary>
+    internal sealed class PackedKeyComparer : IEqualityComparer<ulong>
+    {
+        public static readonly PackedKeyComparer Instance = new();
+
+        public bool Equals(ulong x, ulong y) => x == y;
+
+        public int GetHashCode(ulong key)
+        {
+            key ^= key >> 33;
+            key *= 0xff51afd7ed558ccdUL;
+            key ^= key >> 33;
+            key *= 0xc4ceb9fe1a85ec53UL;
+            key ^= key >> 33;
+            return (int)key;
+        }
+    }
+
     public const float DefaultEpsilon = 0.0001f;
 
     /// <summary>Pick a stable perpendicular axis for the provided normal.</summary>
@@ -24,6 +46,15 @@ public static class CsgCommon
 
         // Fallback for pathological cases.
         return normal.CrossProduct(Vector3f.Up).NormalizedOrDefault(Vector3f.Right);
+    }
+
+    /// <summary>Deep-copy a vertex. Faster than <see cref="ModelVertex.Clone"/>, which clones arrays reflectively.</summary>
+    internal static ModelVertex CloneVertex(in ModelVertex vertex)
+    {
+        var result = vertex;
+        result.Color = [vertex.Color[0], vertex.Color[1], vertex.Color[2], vertex.Color[3]];
+        result.Uv = [vertex.Uv[0], vertex.Uv[1], vertex.Uv[2], vertex.Uv[3]];
+        return result;
     }
 
     /// <summary>Lerp vertex attributes for CSG operations.</summary>

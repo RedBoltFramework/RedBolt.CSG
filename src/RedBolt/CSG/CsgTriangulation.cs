@@ -215,34 +215,42 @@ public static partial class Csg
         outVertices.EnsureCapacity(estimatedVertexCount);
         outIndexData.EnsureCapacity(estimatedIndexCount);
 
-        var buckets = new Dictionary<Vector3i, List<uint>>(estimatedVertexCount * 2);
+        // Each bucket is a singly linked chain through `next`, in insertion order, so the earliest
+        // matching vertex wins as it would in a per-bucket list.
+        var buckets = new Dictionary<Vector3i, (int Head, int Tail)>(estimatedVertexCount);
+        var next = new List<int>(estimatedVertexCount);
 
-        uint GetOrCreateVertexIndex(ModelVertex vertex)
+        uint GetOrCreateVertexIndex(in ModelVertex vertex)
         {
             var key = CsgCommon.QuantizePosition(vertex.GetPosition(), invEps);
-            if (!buckets.TryGetValue(key, out var bucket))
+            ref var bucket = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(
+                buckets, key, out var exists);
+            if (exists)
             {
-                bucket = [];
-                buckets.Add(key, bucket);
+                var span = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(outVertices);
+                for (var existingIndex = bucket.Head; existingIndex >= 0; existingIndex = next[existingIndex])
+                {
+                    ref readonly var existing = ref span[existingIndex];
+
+                    // Fast reject by position with CSG epsilon.
+                    if (!existing.Position.ApproximatelyEquivalent(vertex.Position, eps))
+                        continue;
+
+                    // Other attributes are expected to match very closely if the vertex is truly shared.
+                    if (existing.Equals(vertex))
+                        return (uint)existingIndex;
+                }
             }
 
-            foreach (var existingIndex in bucket)
-            {
-                var existing = outVertices[(int)existingIndex];
-
-                // Fast reject by position with CSG epsilon.
-                if (!existing.Position.ApproximatelyEquivalent(vertex.Position, eps))
-                    continue;
-
-                // Other attributes are expected to match very closely if the vertex is truly shared.
-                if (existing == vertex)
-                    return existingIndex;
-            }
-
-            var newIndex = (uint)outVertices.Count;
-            outVertices.Add(vertex.Clone());
-            bucket.Add(newIndex);
-            return newIndex;
+            var newIndex = outVertices.Count;
+            outVertices.Add(CsgCommon.CloneVertex(vertex));
+            next.Add(-1);
+            if (exists)
+                next[bucket.Tail] = newIndex;
+            else
+                bucket.Head = newIndex;
+            bucket.Tail = newIndex;
+            return (uint)newIndex;
         }
 
         var triIndices = new List<uint>();
@@ -254,8 +262,9 @@ public static partial class Csg
             if (!TriangulatePolygon(poly, triIndices))
                 continue;
 
+            var vertices = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(poly.Vertices);
             foreach (var polyVertexIndex in triIndices)
-                outIndexData.Add(GetOrCreateVertexIndex(poly.Vertices[(int)polyVertexIndex]));
+                outIndexData.Add(GetOrCreateVertexIndex(vertices[(int)polyVertexIndex]));
         }
 
         return outIndexData.Count != 0;
@@ -263,6 +272,11 @@ public static partial class Csg
 
     /// <summary>Triangulate polygons into CPU representation of CSG output.</summary>
     public static CsgTriangulatedModel TriangulatePolygons(List<CsgPolygon> polygons,
+        float epsilon = CsgCommon.DefaultEpsilon) => TriangulatePolygons((IReadOnlyList<CsgPolygon>)polygons, epsilon);
+
+    /// <summary>Triangulate polygons into CPU representation of CSG output.</summary>
+    /// <remarks>Input polygons are not modified; output vertices never share attribute arrays with them.</remarks>
+    public static CsgTriangulatedModel TriangulatePolygons(IReadOnlyList<CsgPolygon> polygons,
         float epsilon = CsgCommon.DefaultEpsilon)
     {
         var result = new CsgTriangulatedModel();
@@ -273,7 +287,8 @@ public static partial class Csg
         var groups = new Dictionary<uint, List<CsgPolygon>>();
         foreach (var sourcePolygon in polygons)
         {
-            var p = sourcePolygon.Clone();
+            // Simplification copies polygons before editing them, so inputs are grouped as they are.
+            var p = sourcePolygon;
             if (!groups.TryGetValue(p.Shared, out var group))
             {
                 group = [];
@@ -291,7 +306,7 @@ public static partial class Csg
         {
             var polys = groups[sharedKey];
 
-            SimplifyPolygons(polys, epsilon);
+            SimplifyPolygons(polys, epsilon, true);
 
             var geometry = new CsgTriangulatedModel.Geometry
             {
