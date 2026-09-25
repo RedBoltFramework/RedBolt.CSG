@@ -70,6 +70,9 @@ public partial class CsgRoot : CsgComponent
         public uint BuildId;
         public uint ComponentId;
         public float Epsilon;
+        // Booleans run in the root frame with its world scale applied, so epsilon and angles are metric on
+        // every axis. Output is converted back to node space before packing.
+        public Vector3f MetricScale = Vector3f.One;
 
         public Model? BaseModel;
         public ResourceRefList BaseMaterials = new();
@@ -206,28 +209,53 @@ public partial class CsgRoot : CsgComponent
             BaseMaterials = tempBase.GetMaterialsAttr().Clone(),
         };
 
-        // Prepare source lookup tables for output vertex layout and materials.
-        // MeshId 0 is reserved for the base operand.
+        // A bake belongs to the base operand it was made from.
+        if (_baked is not null && (!ReferenceEquals(_baked.BaseModel, job.BaseModel) || _baked.Epsilon != _epsilon))
+            _baked = null;
+
+        // Prepare source lookup tables for output vertex layout and materials. MeshId 0 is reserved for the
+        // base operand. Baked faces refer to the tables of the build they came from, so new brushes extend them.
         job.SourceModels.Clear();
         job.SourceMaterials.Clear();
-        job.SourceModels.Add(job.BaseModel);
-        job.SourceMaterials.Add(job.BaseMaterials.Clone());
+        if (_baked is not null)
+        {
+            job.SourceModels.AddRange(_baked.SourceModels);
+            foreach (var materials in _baked.SourceMaterials)
+                job.SourceMaterials.Add(materials?.Clone());
+        }
+        else
+        {
+            job.SourceModels.Add(job.BaseModel);
+            job.SourceMaterials.Add(job.BaseMaterials.Clone());
+        }
 
         // The base model is extracted only if the prior solid cannot be reused.
         job.RootStep.Model = job.BaseModel;
         job.RootStep.Materials = job.BaseMaterials.Clone();
         job.RootStep.MeshId = 0;
 
-        // Build operation tree recursively starting from root node.
-        var invRootWorld = node.GetWorldTransform().Inverse;
-        if (!BuildOperationTree(job.RootStep, node, invRootWorld, tempB, job.SourceModels, job.SourceMaterials))
+        // Build operation tree recursively starting from root node. Non-uniformly scaled roots would otherwise
+        // distort operands: nearly parallel faces become ill-conditioned and epsilon differs per axis.
+        job.MetricScale = GetMetricScale(node);
+        var rootFrame = Matrix3x4.FromScale(job.MetricScale) * node.GetWorldTransform().Inverse;
+        if (!BuildOperationTree(job.RootStep, node, rootFrame, tempB, job.SourceModels, job.SourceMaterials))
         {
+            _cachedBrushes.Clear();
+            _rebuildDirty = false;
+            if (_baked is not null)
+            {
+                // No new operations after a bake: the baked result is the output and the base for appends.
+                _cachedSolid = _baked.Solid;
+                _cachedBaseModel = job.BaseModel;
+                _cachedEpsilon = _baked.Epsilon;
+                _cachedMetricScale = _baked.MetricScale;
+                ApplyResultToOutput(_baked.OutputModel, _baked.OutputMaterials.Clone());
+                return;
+            }
             // No operations: return base model directly.
             _cachedSolid = null;
-            _cachedBrushes.Clear();
             var baseMaterials = tempBase.GetMaterialsAttr().Clone();
             ApplyResultToOutput(tempBase.GetModel(), baseMaterials);
-            _rebuildDirty = false;
             return;
         }
 
@@ -237,6 +265,7 @@ public partial class CsgRoot : CsgComponent
             && _cachedSolid is not null
             && ReferenceEquals(job.BaseModel, _cachedBaseModel)
             && job.Epsilon == _cachedEpsilon
+            && job.MetricScale == _cachedMetricScale
             && _cachedBrushes.Count < job.FlatBrushes.Count)
         {
             var prefixUnchanged = true;
@@ -255,7 +284,11 @@ public partial class CsgRoot : CsgComponent
             }
         }
         if (job.CachedSolid is null)
-            job.RootStep.Polygons = Csg.BuildPolygonsFromModel(job.BaseModel, Matrix3x4.Identity, 0);
+        {
+            job.RootStep.Polygons = _baked is not null
+                ? RescalePolygons(_baked.Solid.Faces, job.MetricScale / _baked.MetricScale)
+                : Csg.BuildPolygonsFromModel(job.BaseModel, Matrix3x4.FromScale(job.MetricScale), 0);
+        }
 
         // Graphics resources are inspected on the main thread. The worker uses this immutable layout snapshot
         // to do all expensive vertex and index packing without touching graphics objects.
@@ -431,6 +464,7 @@ public partial class CsgRoot : CsgComponent
         base.OnModelChanged();
         _cachedSolid = null;
         _cachedBrushes.Clear();
+        _baked = null;
         RequestRebuild();
     }
 
@@ -739,7 +773,7 @@ public partial class CsgRoot : CsgComponent
         return true;
     }
 
-    private bool BuildOperationTree(BrushStep rootStep, Node? node, Matrix3x4 invRootWorld, StaticModel tempModel,
+    private bool BuildOperationTree(BrushStep rootStep, Node? node, Matrix3x4 rootFrame, StaticModel tempModel,
         List<Model?> sourceModels, List<ResourceRefList?> sourceMaterials)
     {
         if (node is null)
@@ -782,19 +816,19 @@ public partial class CsgRoot : CsgComponent
                 sourceModels.Add(step.Model);
                 sourceMaterials.Add(step.Materials.Clone());
 
-                // Extract polygons in CsgRoot local space (main thread).
-                var brushToRoot = invRootWorld * child.GetWorldTransform();
+                // Extract polygons in the metric root frame (main thread).
+                var brushToRoot = rootFrame * child.GetWorldTransform();
                 step.Transform = brushToRoot;
                 step.Polygons = Csg.BuildPolygonsFromModel(step.Model, brushToRoot, step.MeshId);
 
                 // Recurse into the brush subtree.
-                BuildOperationTree(step, child, invRootWorld, tempModel, sourceModels, sourceMaterials);
+                BuildOperationTree(step, child, rootFrame, tempModel, sourceModels, sourceMaterials);
                 rootStep.Children.Add(step);
             }
             else
             {
                 // Recurse into nodes without brushes.
-                BuildOperationTree(rootStep, child, invRootWorld, tempModel, sourceModels, sourceMaterials);
+                BuildOperationTree(rootStep, child, rootFrame, tempModel, sourceModels, sourceMaterials);
             }
         }
 
@@ -827,7 +861,10 @@ public partial class CsgRoot : CsgComponent
         job.ResultSolid = resultSolid;
         CsgTriangulatedModel? triangulated = null;
         if (resultSolid.FaceCount != 0)
+        {
             triangulated = Csg.TriangulatePolygons(resultSolid.Faces, job.Epsilon);
+            ToNodeSpace(triangulated, job.MetricScale);
+        }
         var prepared = triangulated is not null
             ? Csg.PrepareModel(triangulated, job.SourceVertexElements)
             : null;
@@ -836,6 +873,102 @@ public partial class CsgRoot : CsgComponent
             job.ComponentId, elapsed / 1000, elapsed % 1000);
 
         queue.PostDelayedTaskForMainThread(() => ApplyBuildJobResultOnMainThread(job, prepared));
+    }
+
+    /// <summary>
+    /// Fold every applied brush into the base operand and remove the brush nodes. Later brushes are applied
+    /// to the baked result, so each one costs a single boolean regardless of how many came before.
+    /// </summary>
+    /// <remarks>
+    /// Baking is destructive and runtime-only: baked brushes can no longer be moved or removed, and the baked
+    /// geometry is not serialized. It succeeds only when the displayed output reflects every brush of a flat
+    /// operation tree, with no rebuild in flight and no result pending. Changing the base model discards it.
+    /// </remarks>
+    /// <returns>Whether the brushes were baked.</returns>
+    public bool Bake()
+    {
+        if (TryGetNode() is null || _rebuildInFlight || _rebuildDirty || HasPendingResult
+            || _cachedSolid is null || _cachedBrushes.Count == 0 || _cachedSourceModels is null)
+            return false;
+        var output = GetOrCreateOutputStaticModel();
+        if (output?.GetModel() is not { } outputModel)
+            return false;
+
+        _baked = new BakedState(_cachedSolid, _cachedMetricScale, _cachedEpsilon, _cachedBaseModel,
+            [.. _cachedSourceModels], [.. _cachedSourceMaterials!], outputModel, output.GetMaterialsAttr().Clone());
+        var brushes = new List<BrushFingerprint>(_cachedBrushes);
+        _cachedBrushes.Clear();
+        // Removing the nodes requests a rebuild, which finds no brushes and keeps the baked output.
+        foreach (var brush in brushes)
+            brush.Brush.TryGetNode()?.Remove();
+        return true;
+    }
+
+    private sealed record BakedState(CsgSolid Solid, Vector3f MetricScale, float Epsilon, Model? BaseModel,
+        List<Model?> SourceModels, List<ResourceRefList?> SourceMaterials, Model OutputModel,
+        ResourceRefList OutputMaterials);
+
+    /// <summary>Scale polygon positions and fix normals and planes; returns shared faces for a unit factor.</summary>
+    private static List<CsgPolygon> RescalePolygons(IReadOnlyList<CsgPolygon> faces, Vector3f factor)
+    {
+        var result = new List<CsgPolygon>(faces.Count);
+        if (factor == Vector3f.One)
+        {
+            result.AddRange(faces);
+            return result;
+        }
+        var normalFactor = new Vector3f(1.0f / factor.X, 1.0f / factor.Y, 1.0f / factor.Z);
+        foreach (var face in faces)
+        {
+            var vertices = new List<ModelVertex>(face.Vertices.Count);
+            foreach (var source in face.Vertices)
+            {
+                var vertex = source;
+                vertex.SetPosition(vertex.GetPosition() * factor);
+                if (vertex.HasNormal())
+                    vertex.SetNormal((vertex.GetNormal() * normalFactor).NormalizedOrDefault(vertex.GetNormal()));
+                vertices.Add(vertex);
+            }
+            result.Add(new CsgPolygon(vertices, face.Shared));
+        }
+        return result;
+    }
+
+    /// <summary>World scale of the root, or one on an axis whose scale is degenerate.</summary>
+    private static Vector3f GetMetricScale(Node node)
+    {
+        var scale = node.WorldScale;
+        static float Axis(float value) => float.IsFinite(value) && value > 1e-6f ? value : 1.0f;
+        return new Vector3f(Axis(scale.X), Axis(scale.Y), Axis(scale.Z));
+    }
+
+    /// <summary>Convert triangulated output from the metric root frame to node space.</summary>
+    /// <remarks>Triangulated vertices are private copies, so they are converted in place.</remarks>
+    private static void ToNodeSpace(CsgTriangulatedModel model, Vector3f scale)
+    {
+        if (scale == Vector3f.One)
+            return;
+        var inverse = new Vector3f(1.0f / scale.X, 1.0f / scale.Y, 1.0f / scale.Z);
+        foreach (var geometry in model.Geometries)
+        {
+            foreach (ref var vertex in System.Runtime.InteropServices.CollectionsMarshal.AsSpan(geometry.Vertices))
+            {
+                vertex.SetPosition(vertex.GetPosition() * inverse);
+                // Normals use the inverse transpose of the position transform; surface directions use it directly.
+                if (vertex.HasNormal())
+                    vertex.SetNormal((vertex.GetNormal() * scale).NormalizedOrDefault(vertex.GetNormal()));
+                if (vertex.HasTangent())
+                {
+                    var tangent = (vertex.GetTangent() * inverse).NormalizedOrDefault(vertex.GetTangent());
+                    vertex.Tangent = new Vector4f(tangent, vertex.Tangent.W);
+                }
+                if (vertex.HasBinormal())
+                    vertex.Binormal = (vertex.Binormal.ToVector3() * inverse).NormalizedOrDefault(
+                        vertex.Binormal.ToVector3()).ToVector4();
+            }
+        }
+        if (model.HasAnyVertex)
+            model.BoundingBox = new BoundingBox(model.BoundingBox.Min * inverse, model.BoundingBox.Max * inverse);
     }
 
     private static void ApplyBuildJobResultOnMainThread(BuildJob job, Csg.PreparedModel? prepared)
@@ -875,6 +1008,9 @@ public partial class CsgRoot : CsgComponent
         root._cachedSolid = job.FlatBrushes.Count == job.RootStep.Children.Count ? job.ResultSolid : null;
         root._cachedBaseModel = job.BaseModel;
         root._cachedEpsilon = job.Epsilon;
+        root._cachedMetricScale = job.MetricScale;
+        root._cachedSourceModels = job.SourceModels;
+        root._cachedSourceMaterials = job.SourceMaterials;
         root._cachedBrushes.Clear();
         if (root._cachedSolid is not null)
             root._cachedBrushes.AddRange(job.FlatBrushes);
@@ -944,6 +1080,10 @@ public partial class CsgRoot : CsgComponent
     private CsgSolid? _cachedSolid;
     private Model? _cachedBaseModel;
     private float _cachedEpsilon;
+    private Vector3f _cachedMetricScale = Vector3f.One;
+    private List<Model?>? _cachedSourceModels;
+    private List<ResourceRefList?>? _cachedSourceMaterials;
+    private BakedState? _baked;
     private readonly List<BrushFingerprint> _cachedBrushes = [];
 
     private WeakReference<StaticModel>? _output;

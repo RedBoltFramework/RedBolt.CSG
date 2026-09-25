@@ -356,7 +356,8 @@ public static partial class Csg
     /// <summary>Compute a boolean operation on reusable polygonal solids.</summary>
     /// <remarks>
     /// The face BVHs find surfaces that meet. Whole connected regions without a surface intersection
-    /// are classified once; only regions at the intersection frontier enter local BSP clipping.
+    /// are classified once; only faces at the intersection frontier are split, along the intersection
+    /// segments and the edges of coplanar overlaps. Operands must be closed meshes.
     /// </remarks>
     public static CsgSolid BooleanOperation(CsgSolid a, CsgSolid b, CsgOperation operation,
         float epsilon = CsgCommon.DefaultEpsilon)
@@ -365,12 +366,7 @@ public static partial class Csg
         ArgumentNullException.ThrowIfNull(b);
         if (epsilon <= 0.0f)
             epsilon = CsgCommon.DefaultEpsilon;
-        var result = a.Boolean(b, operation, epsilon);
-        // Local plane arrangements may become non-manifold near near-coincident edges. Preserve
-        // the established BSP result until those degeneracies can be resolved topologically.
-        if (result.FaceCount != 0 && !result.IsClosed && a.IsClosed && b.IsClosed)
-            return a.BooleanWithBsp(b, operation, epsilon);
-        return result;
+        return a.Boolean(b, operation, epsilon);
     }
 
     /// <summary>Extract a reusable polygonal solid from a model in the supplied local frame.</summary>

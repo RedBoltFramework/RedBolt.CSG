@@ -6,6 +6,7 @@ namespace RedBolt.CSG;
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -20,13 +21,38 @@ using Vec3 = System.Numerics.Vector3;
 /// A face BVH finds the intersection frontier; shared edges identify regions that can be classified together.
 /// </summary>
 /// <remarks>
+/// Operands must be closed meshes without holes; boolean results are closed as well. Open input is not
+/// supported, and <see cref="IsClosed"/> reports whether a solid satisfies that requirement.
 /// Faces are immutable once owned by a solid. Internal copies share the per-vertex color and UV arrays
 /// of <see cref="ModelVertex"/>, so CSG code must replace vertices rather than write into those arrays.
 /// Geometry queries run on flat <see cref="Vec3"/> arrays so hot loops never touch the attribute structs.
 /// </remarks>
 public sealed class CsgSolid
 {
-    private readonly record struct IntersectionEdge(int FaceA, int FaceB, Vector3f Start, Vector3f End);
+    /// <summary>
+    /// Length of unmatched edges that a solid may have and still count as closed: the larger of an absolute
+    /// budget in epsilons and a fraction of the solid's total edge length. Plane intersections between nearly
+    /// parallel faces leave hairline cracks; rejecting those would send every later boolean on the solid to the
+    /// BSP fallback. Ray-parity classification is not affected by holes this small, while a misclassified
+    /// region leaves a crack as long as its perimeter and is still rejected.
+    /// </summary>
+    private const float CrackBudgetEpsilons = 200.0f;
+    private const float CrackBudgetFraction = 0.001f;
+
+    /// <summary>
+    /// Unmatched seam edges are collapsed while healing when shorter than CrackCollapseScale epsilons, or
+    /// than CrackCollapseFraction of the unmatched edges beside them, but never beyond CrackCollapseMaxScale.
+    /// </summary>
+    private const float CrackCollapseScale = 64.0f;
+    private const float CrackCollapseFraction = 0.05f;
+    private const float CrackCollapseMaxScale = 256.0f;
+    private const int MaxCollapseRounds = 4;
+
+    /// <summary>Radius, in epsilons, within which intersection curve vertices from both operands are merged.</summary>
+    private const float CurveSnapScale = 8.0f;
+
+    /// <summary>A cut to apply to a frontier face: a segment on the face and the plane that divides it there.</summary>
+    private readonly record struct IntersectionEdge(Vector3f Start, Vector3f End, Plane Cut);
 
     private readonly CsgPolygon[] _faces;
     // Face f owns triangles [_triangleStart[f], _triangleStart[f + 1]). Each triangle stores three positions
@@ -44,6 +70,11 @@ public sealed class CsgSolid
     private readonly int[] _faceComponents;
     // Position of each face within its component row, so a component can be copied with local renumbering.
     private readonly int[] _faceRanks;
+    // Directed edges that would close the surface: each cancels the winding surplus of an unmatched edge.
+    // Null when every edge is matched.
+    private List<(int From, int To, Vec3 FromPoint, Vec3 ToPoint, uint Shared)>? _openEdges;
+    // Vertex ids of the open edges resolve through this welder; kept only while the solid has open edges.
+    private PointWelder? _crackWelder;
     private readonly Vec3 _boundsMin;
     private readonly Vec3 _boundsMax;
     private readonly Vec3[] _componentMin;
@@ -56,6 +87,9 @@ public sealed class CsgSolid
     public int FaceCount => _faces.Length;
     public int ComponentCount => _componentStart.Length - 1;
     public bool IsClosed { get; }
+
+    /// <summary>Whether any edge is unmatched, including hairline cracks tolerated by <see cref="IsClosed"/>.</summary>
+    internal bool HasOpenEdges => _openEdges is not null;
 
     private FaceBvh ComponentTree => _componentTree ??= new FaceBvh(_componentMin, _componentMax);
 
@@ -187,7 +221,7 @@ public sealed class CsgSolid
         _faceRanks = builder.FaceRanks.ToArray();
         _adjacencyStart = builder.AdjacencyStart.ToArray();
         _adjacentFaces = builder.AdjacentFaces.ToArray();
-        IsClosed = builder.Closed && _faces.Length != 0;
+        IsClosed = builder.Closed;
         (_boundsMin, _boundsMax) = MergeBounds(_faceMin, _faceMax);
         ComponentBounds(_componentStart, _componentFaces, _faceMin, _faceMax, out _componentMin, out _componentMax);
         _faceTrees = new FaceBvh?[ComponentCount];
@@ -317,11 +351,190 @@ public sealed class CsgSolid
     /// <summary>Build a face tree over every face; for builder benchmarks.</summary>
     internal int BuildFaceTreeForBenchmark() => new FaceBvh(_faceMin, _faceMax).Nodes.Length;
 
+    /// <summary>
+    /// Close the seams left along intersection curves. Where the surface grazes an edge at a shallow angle,
+    /// the two sides of a seam can place a curve vertex a few millimeters apart, leaving a sliver-shaped gap
+    /// with a short unmatched edge at its wide end. Collapsing short unmatched edges makes the long sides of
+    /// such a gap coincide; any gap that remains is filled.
+    /// </summary>
+    private CsgSolid Healed(float epsilon)
+    {
+        // Moving vertices can expose a neighboring sliver, so collapse repeats a few times before filling.
+        var solid = this;
+        for (var round = 0; round < MaxCollapseRounds && solid._openEdges is not null; ++round)
+        {
+            var collapsed = solid.CollapseShortOpenEdges(epsilon);
+            if (ReferenceEquals(collapsed, solid))
+                break;
+            solid = collapsed;
+        }
+        if (solid._openEdges is not null)
+            solid = solid.WithFilledCracks(epsilon);
+
+        // A hole propagates into every later operation, while a slightly moved vertex does not. Any gap left
+        // at this point is closed by collapsing its whole boundary, trading local accuracy for a closed mesh.
+        // Each round merges at least one vertex pair, so the loop ends.
+        while (solid._openEdges is not null)
+        {
+            var collapsed = solid.CollapseShortOpenEdges(epsilon, all: true);
+            if (ReferenceEquals(collapsed, solid))
+                break;
+            solid = collapsed;
+        }
+        return solid;
+    }
+
+    /// <summary>
+    /// Merge the endpoints of short unmatched edges, or of every unmatched edge when <paramref name="all"/> is
+    /// set; returns this solid when none qualify.
+    /// </summary>
+    private CsgSolid CollapseShortOpenEdges(float epsilon, bool all = false)
+    {
+        var welder = _crackWelder!;
+        var parents = new Dictionary<int, int>();
+        // A seam sliver has two long unmatched sides and a short one at its wide end. The short edge qualifies
+        // when it is small in absolute terms or small next to the unmatched edges beside it.
+        var longest = new Dictionary<int, float>();
+        foreach (var edge in _openEdges!)
+        {
+            var length = (edge.ToPoint - edge.FromPoint).Length();
+            foreach (var id in (ReadOnlySpan<int>)[edge.From, edge.To])
+            {
+                ref var value = ref CollectionsMarshal.GetValueRefOrAddDefault(longest, id, out _);
+                value = MathF.Max(value, length);
+            }
+        }
+        foreach (var edge in _openEdges)
+        {
+            var length = (edge.ToPoint - edge.FromPoint).Length();
+            var beside = MathF.Max(longest[edge.From], longest[edge.To]);
+            var limit = MathF.Min(epsilon * CrackCollapseMaxScale,
+                MathF.Max(epsilon * CrackCollapseScale, beside * CrackCollapseFraction));
+            if (!all && length > limit)
+                continue;
+            var a = Find(edge.From);
+            var b = Find(edge.To);
+            if (a != b)
+                parents[System.Math.Max(a, b)] = System.Math.Min(a, b);
+        }
+        if (parents.Count == 0)
+            return this;
+
+        // Every merged vertex moves to the average of its group.
+        var members = new HashSet<int>(parents.Keys.Concat(parents.Values));
+        var totals = new Dictionary<int, (Vec3 Sum, int Count)>();
+        foreach (var id in members)
+        {
+            ref var total = ref CollectionsMarshal.GetValueRefOrAddDefault(totals, Find(id), out _);
+            total = (total.Sum + welder.Positions[id], total.Count + 1);
+        }
+
+        var faces = new List<CsgPolygon>(_faces.Length);
+        foreach (var face in _faces)
+        {
+            CsgPolygon? moved = null;
+            var vertices = CollectionsMarshal.AsSpan(face.Vertices);
+            for (var i = 0; i < vertices.Length; ++i)
+            {
+                var id = welder.Find(Position(vertices[i]));
+                if (id < 0 || !members.Contains(id))
+                    continue;
+                moved ??= face.CloneShared();
+                var (sum, count) = totals[Find(id)];
+                var vertex = moved.Vertices[i];
+                vertex.SetPosition(ToVector3f(sum / count));
+                moved.Vertices[i] = vertex;
+            }
+            faces.Add(moved ?? face);
+        }
+        return new CsgSolid(faces, epsilon, false);
+
+        int Find(int id)
+        {
+            while (parents.TryGetValue(id, out var parent))
+                id = parent;
+            return id;
+        }
+    }
+
+    private CsgSolid WithFilledCracks(float epsilon)
+    {
+        var open = _openEdges!;
+        var outgoing = new Dictionary<int, List<int>>();
+        for (var i = 0; i < open.Count; ++i)
+        {
+            if (!outgoing.TryGetValue(open[i].From, out var list))
+                outgoing.Add(open[i].From, list = []);
+            list.Add(i);
+        }
+
+        var faces = new List<CsgPolygon>(_faces);
+        var used = new bool[open.Count];
+        var loop = new List<int>();
+        for (var start = 0; start < open.Count; ++start)
+        {
+            if (used[start])
+                continue;
+            loop.Clear();
+            loop.Add(start);
+            used[start] = true;
+            var closedLoop = false;
+            while (loop.Count <= open.Count)
+            {
+                var head = open[loop[^1]].To;
+                if (head == open[start].From)
+                {
+                    closedLoop = true;
+                    break;
+                }
+                var next = -1;
+                if (outgoing.TryGetValue(head, out var candidates))
+                {
+                    foreach (var candidate in candidates)
+                    {
+                        if (!used[candidate])
+                        {
+                            next = candidate;
+                            break;
+                        }
+                    }
+                }
+                if (next < 0)
+                    break;
+                used[next] = true;
+                loop.Add(next);
+            }
+            if (!closedLoop || loop.Count < 3)
+                continue;
+
+            // Fan triangles from the first loop vertex; the loop direction already opposes the gap's boundary.
+            var normal = Vec3.Zero;
+            var origin = open[loop[0]].FromPoint;
+            for (var i = 1; i + 1 < loop.Count; ++i)
+                normal += Vec3.Cross(open[loop[i]].FromPoint - origin, open[loop[i + 1]].FromPoint - origin);
+            var unitNormal = normal.LengthSquared() > 1e-30f ? Vec3.Normalize(normal) : Vec3.UnitY;
+            for (var i = 1; i + 1 < loop.Count; ++i)
+            {
+                faces.Add(new CsgPolygon([
+                    FillVertex(origin, unitNormal),
+                    FillVertex(open[loop[i]].FromPoint, unitNormal),
+                    FillVertex(open[loop[i + 1]].FromPoint, unitNormal)
+                ], open[loop[0]].Shared));
+            }
+        }
+        return faces.Count == _faces.Length ? this : new CsgSolid(faces, epsilon, false);
+
+        static ModelVertex FillVertex(Vec3 position, Vec3 normal)
+        {
+            var vertex = new ModelVertex();
+            vertex.SetPosition(ToVector3f(position));
+            vertex.SetNormal(ToVector3f(normal));
+            return vertex;
+        }
+    }
+
     /// <summary>Faces owned by this solid. Callers must not modify them or their vertex attribute arrays.</summary>
     internal IReadOnlyList<CsgPolygon> Faces => _faces;
-
-    internal CsgSolid BooleanWithBsp(CsgSolid other, CsgOperation operation, float epsilon) =>
-        new(BooleanWithBsp(ConvexPieces(), other.ConvexPieces(), operation, epsilon), epsilon, false);
 
     internal CsgSolid Boolean(CsgSolid other, CsgOperation operation, float epsilon)
     {
@@ -331,16 +544,12 @@ public sealed class CsgSolid
         if (other._faces.Length == 0)
             return operation == CsgOperation.Intersection ? other : this;
 
-        // Classification by a single sample is valid only for closed connected surfaces. Retain the
-        // established BSP behavior for open or non-manifold inputs.
-        if (!IsClosed || !other.IsClosed)
-            return BooleanWithBsp(other, operation, epsilon);
-
+        // Regions are classified by one sample each with ray parity, which requires closed operands.
         var contactsA = new List<int>[ComponentCount];
         var contactsB = new List<int>[other.ComponentCount];
         var componentLinks = new HashSet<(int A, int B)>();
-        var frontierA = new List<IntersectionEdge>[_faces.Length];
-        var frontierB = new List<IntersectionEdge>[other._faces.Length];
+        var frontierA = new Frontier[_faces.Length];
+        var frontierB = new Frontier[other._faces.Length];
 
         // Operands with disjoint bounds need neither tree for contact.
         var pairs = new List<(int A, int B)>();
@@ -353,11 +562,8 @@ public sealed class CsgSolid
         }
         foreach (var (faceA, faceB) in pairs)
         {
-            var contact = CollectIntersectionEdges(faceA, other, faceB, epsilon, frontierA, frontierB);
-            if (contact == Contact.None)
+            if (!CollectIntersectionEdges(faceA, other, faceB, epsilon, frontierA, frontierB))
                 continue;
-            if (contact == Contact.Uncertain)
-                return BooleanWithBsp(other, operation, epsilon);
             var componentA = _faceComponents[faceA];
             var componentB = other._faceComponents[faceB];
             if (componentLinks.Add((componentA, componentB)))
@@ -367,6 +573,7 @@ public sealed class CsgSolid
             }
         }
 
+        var curvePoints = SnapCurvePoints(frontierA, frontierB, epsilon);
         var result = new SolidBuilder(_faces.Length + other._faces.Length, _trianglePositions.Length + other._trianglePositions.Length);
         var visitedA = new bool[ComponentCount];
         var visitedB = new bool[other.ComponentCount];
@@ -416,9 +623,9 @@ public sealed class CsgSolid
             }
 
             var local = new List<CsgPolygon>();
-            if (!AppendContactGroup(local, other, groupA, groupB, frontierA, frontierB, operation, epsilon))
-                return BooleanWithBsp(other, operation, epsilon);
-            result.AppendSolid(new CsgSolid(local, epsilon, false));
+            AppendContactGroup(local, other, groupA, groupB, frontierA, frontierB, curvePoints, operation, epsilon);
+            var region = new CsgSolid(local, epsilon, false);
+            result.AppendSolid(region._openEdges is null ? region : region.Healed(epsilon));
         }
 
         for (var component = 0; component < other.ComponentCount; ++component)
@@ -434,34 +641,6 @@ public sealed class CsgSolid
         return new CsgSolid(result);
     }
 
-    /// <summary>
-    /// Private copies of the faces for BSP clipping, which assumes convex polygons. Boolean results can
-    /// hold merged concave faces; those are passed as their triangles.
-    /// </summary>
-    private List<CsgPolygon> ConvexPieces()
-    {
-        var result = new List<CsgPolygon>(_faces.Length);
-        for (var faceIndex = 0; faceIndex < _faces.Length; ++faceIndex)
-        {
-            var face = _faces[faceIndex];
-            if (face.Vertices.Count <= 3 || face.IsConvex())
-            {
-                result.Add(face.CloneShared());
-                continue;
-            }
-            for (var t = _triangleStart[faceIndex]; t < _triangleStart[faceIndex + 1]; ++t)
-            {
-                result.Add(new CsgPolygon(
-                [
-                    face.Vertices[_triangleVertices[t * 3]],
-                    face.Vertices[_triangleVertices[t * 3 + 1]],
-                    face.Vertices[_triangleVertices[t * 3 + 2]]
-                ], face.Shared));
-            }
-        }
-        return result;
-    }
-
     private static CsgPolygon Flipped(CsgPolygon face)
     {
         var result = face.CloneShared();
@@ -469,23 +648,66 @@ public sealed class CsgSolid
         return result;
     }
 
-    private bool AppendContactGroup(List<CsgPolygon> result, CsgSolid other,
-        IReadOnlyList<int> groupA, IReadOnlyList<int> groupB,
-        List<IntersectionEdge>[] frontierA, List<IntersectionEdge>[] frontierB,
-        CsgOperation operation, float epsilon)
+    private void AppendContactGroup(List<CsgPolygon> result, CsgSolid other,
+        IReadOnlyList<int> groupA, IReadOnlyList<int> groupB, Frontier[] frontierA, Frontier[] frontierB,
+        PointWelder curvePoints, CsgOperation operation, float epsilon)
     {
         // The intersection segments form barriers in the shared-edge graph. Classify every intact
         // patch once, then split only faces at the frontier using local planes.
-        var local = new List<CsgPolygon>();
-        if (!AppendPatchesAndFragments(local, other, groupA, frontierA, operation, false, epsilon)
-            || !other.AppendPatchesAndFragments(local, this, groupB, frontierB, operation, true, epsilon))
-            return false;
-        result.AddRange(local);
-        return true;
+        AppendPatchesAndFragments(result, other, groupA, frontierA, curvePoints, operation, false, epsilon);
+        other.AppendPatchesAndFragments(result, this, groupB, frontierB, curvePoints, operation, true, epsilon);
     }
 
-    private bool AppendPatchesAndFragments(List<CsgPolygon> output, CsgSolid other,
-        IReadOnlyList<int> components, List<IntersectionEdge>[] frontier,
+    /// <summary>
+    /// Merge cut endpoints of both operands that lie within a few epsilons into one representative, and move
+    /// every cut onto its representatives. Each side splits its faces independently; without a shared set of
+    /// curve vertices, the two sides compute copies of a curve vertex that can differ by more than epsilon at
+    /// steep face angles, and the seam between them stays open.
+    /// </summary>
+    private static PointWelder SnapCurvePoints(Frontier[] frontierA, Frontier[] frontierB, float epsilon)
+    {
+        var points = new PointWelder(epsilon * CurveSnapScale, 64);
+        Snap(frontierA);
+        Snap(frontierB);
+        return points;
+
+        void Snap(Frontier[] frontiers)
+        {
+            foreach (var frontier in frontiers)
+            {
+                if (frontier is null)
+                    continue;
+                var cuts = CollectionsMarshal.AsSpan(frontier.Cuts);
+                foreach (ref var cut in cuts)
+                {
+                    // Add may grow the position array, so index it only after both calls.
+                    var startId = points.Add(ToVec3(cut.Start));
+                    var endId = points.Add(ToVec3(cut.End));
+                    var start = points.Positions[startId];
+                    var end = points.Positions[endId];
+                    cut = cut with { Start = ToVector3f(start), End = ToVector3f(end) };
+                }
+            }
+        }
+    }
+
+    private static Vec3 ToVec3(Vector3f value) => new(value.X, value.Y, value.Z);
+
+    private static Vector3f ToVector3f(Vec3 value) => new(value.X, value.Y, value.Z);
+
+    /// <summary>
+    /// Cuts collected for one frontier face, and the faces of the other solid that lie in its plane. A face
+    /// with coplanar partners enters the frontier even without cuts, because a surface sample on it would lie
+    /// on the other solid's surface.
+    /// </summary>
+    private sealed class Frontier
+    {
+        public readonly List<IntersectionEdge> Cuts = [];
+        public List<int>? CoplanarFaces;
+    }
+
+    private void AppendPatchesAndFragments(List<CsgPolygon> output, CsgSolid other,
+        IReadOnlyList<int> components, Frontier[] frontier, PointWelder curvePoints,
         CsgOperation operation, bool secondOperand, float epsilon)
     {
         var visited = new bool[_faces.Length];
@@ -499,10 +721,10 @@ public sealed class CsgSolid
                 if (visited[face])
                     continue;
                 visited[face] = true;
-                if (frontier[face] is { } segments)
+                if (frontier[face] is { } faceFrontier)
                 {
-                    if (!SplitAndClassifyFace(output, face, segments, other, operation, secondOperand, epsilon))
-                        return false;
+                    SplitAndClassifyFace(output, face, faceFrontier, curvePoints, other, operation, secondOperand,
+                        epsilon);
                     continue;
                 }
 
@@ -528,14 +750,11 @@ public sealed class CsgSolid
                     output.Add(flip ? Flipped(_faces[patchFace]) : _faces[patchFace]);
             }
         }
-        return true;
     }
 
-    private bool SplitAndClassifyFace(List<CsgPolygon> output, int faceIndex,
-        IReadOnlyList<IntersectionEdge> segments, CsgSolid other,
-        CsgOperation operation, bool secondOperand, float epsilon)
+    private void SplitAndClassifyFace(List<CsgPolygon> output, int faceIndex, Frontier frontier,
+        PointWelder curvePoints, CsgSolid other, CsgOperation operation, bool secondOperand, float epsilon)
     {
-        const int maxFragmentsPerFace = 4096;
         var face = _faces[faceIndex];
         var pieces = new List<CsgPolygon>();
         if (face.IsConvex())
@@ -559,9 +778,9 @@ public sealed class CsgSolid
         // segment's end separate fragments of equal class, and their T-junctions are resolved by topology.
         var normal = face.Plane.Normal;
         var split = new List<CsgPolygon>();
-        foreach (var segment in segments)
+        foreach (var segment in frontier.Cuts)
         {
-            var plane = other._faces[secondOperand ? segment.FaceA : segment.FaceB].Plane;
+            var plane = segment.Cut;
             split.Clear();
             split.EnsureCapacity(pieces.Count + 1);
             foreach (var piece in pieces)
@@ -578,15 +797,46 @@ public sealed class CsgSolid
                 if (second.Vertices.Count >= 3)
                     split.Add(second);
             }
-            if (split.Count > maxFragmentsPerFace)
-                return false;
             (pieces, split) = (split, pieces);
+        }
+
+        // Vertices created by the cuts snap to the shared curve vertices. Original corners stay in place, since
+        // untouched neighbor faces share them.
+        var corners = CollectionsMarshal.AsSpan(face.Vertices);
+        foreach (var piece in pieces)
+        {
+            foreach (ref var vertex in CollectionsMarshal.AsSpan(piece.Vertices))
+            {
+                var isCorner = false;
+                foreach (ref readonly var corner in corners)
+                {
+                    if (corner.Position == vertex.Position)
+                    {
+                        isCorner = true;
+                        break;
+                    }
+                }
+                if (isCorner)
+                    continue;
+                var snapped = curvePoints.Find(Position(vertex));
+                if (snapped >= 0)
+                    vertex.SetPosition(ToVector3f(curvePoints.Positions[snapped]));
+            }
         }
 
         var selected = new List<CsgPolygon>(pieces.Count);
         foreach (var piece in pieces)
         {
-            if (!Keep(other.ContainsPoint(PolygonSample(piece), epsilon), operation, secondOperand))
+            // A piece thinner than epsilon bounds no surface; kept, it duplicates edges of its neighbors.
+            if (IsSliver(CollectionsMarshal.AsSpan(piece.Vertices), epsilon))
+                continue;
+            var sample = PolygonSample(piece);
+            var keep = frontier.CoplanarFaces is { } coplanar
+                && other.FindCoplanarFace(coplanar, sample, epsilon) is var partner && partner >= 0
+                    ? KeepCoplanar(face.Plane.Normal.DotProduct(other._faces[partner].Plane.Normal) > 0.0f,
+                        operation, secondOperand)
+                    : Keep(other.ContainsPoint(sample, epsilon), operation, secondOperand);
+            if (!keep)
                 continue;
             // Every piece owns its vertex list, so flipping in place cannot touch the source face.
             if (secondOperand && operation == CsgOperation.DifferenceAB)
@@ -594,8 +844,71 @@ public sealed class CsgSolid
             selected.Add(piece);
         }
         Csg.SimplifyPolygons(selected, epsilon);
-        output.AddRange(selected);
-        return true;
+        foreach (var polygon in selected)
+        {
+            if (!IsSliver(CollectionsMarshal.AsSpan(polygon.Vertices), epsilon))
+                output.Add(polygon);
+        }
+    }
+
+    /// <summary>
+    /// Coplanar overlap: both solids share this surface region. The first operand's copy represents it when it
+    /// survives, so the second operand's copy is always dropped. With equal orientation the region bounds both
+    /// solids from the same side: union and intersection keep it, a difference removes it. With opposite
+    /// orientation the solids only touch there: only a difference keeps the first operand's surface.
+    /// </summary>
+    private static bool KeepCoplanar(bool sameOrientation, CsgOperation operation, bool secondOperand) =>
+        !secondOperand
+        && (sameOrientation ? operation != CsgOperation.DifferenceAB : operation == CsgOperation.DifferenceAB);
+
+    /// <summary>Index of a listed face whose triangles contain the point within epsilon of its plane, or -1.</summary>
+    private int FindCoplanarFace(List<int> faces, Vector3f point, float epsilon)
+    {
+        var p = new Vec3(point.X, point.Y, point.Z);
+        foreach (var face in faces)
+        {
+            if (MathF.Abs(_faces[face].Plane.Distance(point)) > epsilon * 2.0f)
+                continue;
+            for (var t = _triangleStart[face]; t < _triangleStart[face + 1]; ++t)
+            {
+                if (TriangleContains(_trianglePositions[t * 3], _trianglePositions[t * 3 + 1],
+                        _trianglePositions[t * 3 + 2], p))
+                    return face;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>Whether the projection of a point onto a triangle's plane lies inside the triangle.</summary>
+    private static bool TriangleContains(Vec3 a, Vec3 b, Vec3 c, Vec3 p)
+    {
+        var normal = Vec3.Cross(b - a, c - a);
+        return Vec3.Dot(Vec3.Cross(b - a, p - a), normal) >= 0.0f
+            && Vec3.Dot(Vec3.Cross(c - b, p - b), normal) >= 0.0f
+            && Vec3.Dot(Vec3.Cross(a - c, p - c), normal) >= 0.0f;
+    }
+
+    /// <summary>
+    /// Whether a polygon is thinner than epsilon: twice its area over its longest edge. Such needles arise
+    /// when a cut runs within epsilon of an existing edge and carry no surface.
+    /// </summary>
+    private static bool IsSliver(ReadOnlySpan<ModelVertex> vertices, float epsilon)
+    {
+        if (vertices.Length < 3)
+            return true;
+        var normal = Vec3.Zero;
+        var longest = 0.0f;
+        var first = Position(vertices[0]);
+        var previous = first;
+        for (var i = 1; i <= vertices.Length; ++i)
+        {
+            var current = i == vertices.Length ? first : Position(vertices[i]);
+            normal += Vec3.Cross(previous - first, current - first);
+            longest = MathF.Max(longest, (current - previous).LengthSquared());
+            previous = current;
+        }
+        // |normal| is twice the area; compare twice the area with epsilon times the longest edge.
+        return normal.Length() <= epsilon * MathF.Sqrt(longest);
     }
 
     private static bool Straddles(CsgPolygon piece, Plane plane, float epsilon)
@@ -612,8 +925,9 @@ public sealed class CsgSolid
     }
 
     /// <summary>
-    /// Whether a segment in the piece's plane enters the piece shrunk by epsilon. Pieces are convex:
-    /// frontier faces start convex or as triangles and plane splits preserve convexity.
+    /// Whether a segment in the piece's plane comes within epsilon of the piece. The test errs toward cutting:
+    /// an unneeded cut only separates fragments of equal class, while a missed one misclassifies a piece.
+    /// Pieces are convex: frontier faces start convex or as triangles and plane splits preserve convexity.
     /// </summary>
     private static bool SegmentCrossesInterior(CsgPolygon piece, Vector3f normal, Vector3f start, Vector3f end,
         float epsilon)
@@ -632,9 +946,9 @@ public sealed class CsgSolid
             var length = inward.Length();
             if (length <= 1e-20f)
                 continue;
-            // Signed distances of the segment ends inside this edge, minus the epsilon margin.
-            var ds = Vec3.Dot(inward, s - from) / length - epsilon;
-            var de = Vec3.Dot(inward, e - from) / length - epsilon;
+            // Signed distances of the segment ends inside this edge, with an epsilon margin outward.
+            var ds = Vec3.Dot(inward, s - from) / length + epsilon;
+            var de = Vec3.Dot(inward, e - from) / length + epsilon;
             if (ds < 0.0f && de < 0.0f)
                 return false;
             if (ds < 0.0f)
@@ -840,17 +1154,15 @@ public sealed class CsgSolid
         return distance >= 0.0f ? distance : float.PositiveInfinity;
     }
 
-    private enum Contact
+    /// <summary>
+    /// Record the cuts between two faces that touch. Returns whether they touch at all, which links their
+    /// components. Crossing triangles are cut along their intersection segment. Coplanar triangles cut each
+    /// other along their edges and register as coplanar partners.
+    /// </summary>
+    private bool CollectIntersectionEdges(int faceIndex, CsgSolid other, int otherIndex, float epsilon,
+        Frontier[] frontierA, Frontier[] frontierB)
     {
-        None,
-        Touch,
-        Uncertain
-    }
-
-    private Contact CollectIntersectionEdges(int faceIndex, CsgSolid other, int otherIndex, float epsilon,
-        List<IntersectionEdge>[] frontierA, List<IntersectionEdge>[] frontierB)
-    {
-        var contact = Contact.None;
+        var contact = false;
         var positionsA = _trianglePositions;
         var positionsB = other._trianglePositions;
         for (var a = _triangleStart[faceIndex]; a < _triangleStart[faceIndex + 1]; ++a)
@@ -865,27 +1177,102 @@ public sealed class CsgSolid
                 var b2 = positionsB[b * 3 + 2];
                 if (!TrianglesIntersect(a0, a1, a2, b0, b1, b2, epsilon))
                     continue;
-                contact = Contact.Touch;
+                contact = true;
                 if (!TryIntersectionSegment(a0, a1, a2, b0, b1, b2, epsilon,
-                        out var start, out var end, out var uncertain))
+                        out var start, out var end, out var coplanar))
                 {
-                    if (uncertain)
-                        return Contact.Uncertain;
+                    if (coplanar)
+                        CollectCoplanarCuts(faceIndex, other, otherIndex, a0, a1, a2, b0, b1, b2, epsilon,
+                            frontierA, frontierB);
                     continue; // A zero-length touch does not divide either surface.
                 }
-                var edge = new IntersectionEdge(faceIndex, otherIndex, start, end);
-                (frontierA[faceIndex] ??= []).Add(edge);
-                (frontierB[otherIndex] ??= []).Add(edge);
+                (frontierA[faceIndex] ??= new Frontier()).Cuts.Add(
+                    new IntersectionEdge(start, end, other._faces[otherIndex].Plane));
+                (frontierB[otherIndex] ??= new Frontier()).Cuts.Add(
+                    new IntersectionEdge(start, end, _faces[faceIndex].Plane));
             }
         }
         return contact;
     }
 
+    private void CollectCoplanarCuts(int faceIndex, CsgSolid other, int otherIndex, Vec3 a0, Vec3 a1, Vec3 a2,
+        Vec3 b0, Vec3 b1, Vec3 b2, float epsilon, Frontier[] frontierA, Frontier[] frontierB)
+    {
+        var frontA = frontierA[faceIndex] ??= new Frontier();
+        var frontB = frontierB[otherIndex] ??= new Frontier();
+        if (!(frontA.CoplanarFaces ??= []).Contains(otherIndex))
+            frontA.CoplanarFaces.Add(otherIndex);
+        if (!(frontB.CoplanarFaces ??= []).Contains(faceIndex))
+            frontB.CoplanarFaces.Add(faceIndex);
+        // Each triangle's edges bound the shared region on the other face.
+        AddEdgeCuts(frontA, b0, b1, b2, a0, a1, a2, epsilon);
+        AddEdgeCuts(frontB, a0, a1, a2, b0, b1, b2, epsilon);
+    }
+
+    /// <summary>Add the edges of one triangle, clipped to a coplanar target triangle, as cuts on the target.</summary>
+    private static void AddEdgeCuts(Frontier target, Vec3 e0, Vec3 e1, Vec3 e2, Vec3 t0, Vec3 t1, Vec3 t2,
+        float epsilon)
+    {
+        var normal = Vec3.Normalize(Vec3.Cross(t1 - t0, t2 - t0));
+        AddEdge(e0, e1);
+        AddEdge(e1, e2);
+        AddEdge(e2, e0);
+
+        void AddEdge(Vec3 from, Vec3 to)
+        {
+            if (!ClipToTriangle(ref from, ref to, t0, t1, t2, normal, epsilon))
+                return;
+            var cutNormal = Vec3.Cross(to - from, normal);
+            if (cutNormal.LengthSquared() <= 1e-20f)
+                return;
+            var start = new Vector3f(from.X, from.Y, from.Z);
+            var end = new Vector3f(to.X, to.Y, to.Z);
+            var planeNormal = Vec3.Normalize(cutNormal);
+            target.Cuts.Add(new IntersectionEdge(start, end,
+                new Plane(new Vector3f(planeNormal.X, planeNormal.Y, planeNormal.Z), start)));
+        }
+    }
+
+    /// <summary>
+    /// Clip a segment to a triangle expanded by epsilon in its plane; false when less than epsilon remains.
+    /// </summary>
+    private static bool ClipToTriangle(ref Vec3 from, ref Vec3 to, Vec3 t0, Vec3 t1, Vec3 t2, Vec3 normal,
+        float epsilon)
+    {
+        var low = 0.0f;
+        var high = 1.0f;
+        Span<Vec3> corners = [t0, t1, t2];
+        for (var i = 0; i < 3; ++i)
+        {
+            var corner = corners[i];
+            var inward = Vec3.Cross(normal, corners[(i + 1) % 3] - corner);
+            var length = inward.Length();
+            if (length <= 1e-20f)
+                continue;
+            var ds = Vec3.Dot(inward, from - corner) / length + epsilon;
+            var de = Vec3.Dot(inward, to - corner) / length + epsilon;
+            if (ds < 0.0f && de < 0.0f)
+                return false;
+            if (ds < 0.0f)
+                low = MathF.Max(low, ds / (ds - de));
+            else if (de < 0.0f)
+                high = MathF.Min(high, ds / (ds - de));
+        }
+        if (low >= high)
+            return false;
+        var start = Vec3.Lerp(from, to, low);
+        var end = Vec3.Lerp(from, to, high);
+        if ((end - start).LengthSquared() <= epsilon * epsilon)
+            return false;
+        (from, to) = (start, end);
+        return true;
+    }
+
     private static bool TryIntersectionSegment(Vec3 a0, Vec3 a1, Vec3 a2, Vec3 b0, Vec3 b1, Vec3 b2,
-        float epsilon, out Vector3f start, out Vector3f end, out bool uncertain)
+        float epsilon, out Vector3f start, out Vector3f end, out bool coplanar)
     {
         start = end = Vector3f.Zero;
-        uncertain = false;
+        coplanar = false;
         var normalA = Vec3.Normalize(Vec3.Cross(a1 - a0, a2 - a0));
         var normalB = Vec3.Normalize(Vec3.Cross(b1 - b0, b2 - b0));
         var distanceA = -Vec3.Dot(normalA, a0);
@@ -893,7 +1280,7 @@ public sealed class CsgSolid
         var line = Vec3.Cross(normalA, normalB);
         if (line.LengthSquared() < 1e-8f)
         {
-            uncertain = true; // Coplanar or nearly parallel contact uses the BSP fallback.
+            coplanar = true; // Parallel triangles that touch within epsilon share a plane.
             return false;
         }
         line = Vec3.Normalize(line);
@@ -1026,16 +1413,6 @@ public sealed class CsgSolid
         }
     }
 
-    private static List<CsgPolygon> BooleanWithBsp(List<CsgPolygon> a, List<CsgPolygon> b,
-        CsgOperation operation, float epsilon)
-    {
-        var bspA = new CsgBsp();
-        bspA.Build(a, epsilon);
-        var bspB = new CsgBsp();
-        bspB.Build(b, epsilon);
-        return Csg.BooleanOperation(bspA, bspB, operation, epsilon);
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vec3 Position(in ModelVertex vertex) =>
         new(vertex.Position.X, vertex.Position.Y, vertex.Position.Z);
@@ -1054,7 +1431,8 @@ public sealed class CsgSolid
         out int[] faceComponents, out int[] faceRanks, out int[] adjacencyStart, out int[] adjacentFaces)
     {
         var faceCount = _faces.Length;
-        var closed = faceCount != 0;
+        // An empty solid bounds nothing and is trivially closed.
+        var closed = true;
 
         // Weld positions within epsilon so float noise on either side of a rounding boundary cannot
         // split one shared vertex into two ids.
@@ -1079,7 +1457,7 @@ public sealed class CsgSolid
             }
             while (length > 1 && vertexIds[start + length - 1] == vertexIds[start])
                 --length;
-            loopLength[face] = length;
+            loopLength[face] = IsSliver(vertices, epsilon) ? 0 : length;
             if (vertices.Length < 3 || _triangleStart[face] == _triangleStart[face + 1])
                 closed = false;
         }
@@ -1112,7 +1490,9 @@ public sealed class CsgSolid
         FaceBvh? pointBvh = null;
         var cuts = new List<(float T, int Id)>();
         var nearby = new List<int>();
-        var epsilonSquared = epsilon * epsilon;
+        // T-junction vertices may sit up to the curve snap radius off a long edge; see SnapCurvePoints.
+        var junctionTolerance = epsilon * CurveSnapScale;
+        var junctionToleranceSquared = junctionTolerance * junctionTolerance;
 
         for (var face = 0; face < faceCount; ++face)
         {
@@ -1139,7 +1519,7 @@ public sealed class CsgSolid
                     var points = welder.Positions.AsSpan(0, welder.Count).ToArray();
                     pointBvh = new FaceBvh(points, points);
                 }
-                pointBvh.CollectBox(Vec3.MinNative(start, end), Vec3.MaxNative(start, end), epsilon, nearby);
+                pointBvh.CollectBox(Vec3.MinNative(start, end), Vec3.MaxNative(start, end), junctionTolerance, nearby);
                 cuts.Clear();
                 foreach (var item in nearby)
                 {
@@ -1149,7 +1529,7 @@ public sealed class CsgSolid
                     var t = Vec3.Dot(point - start, span) / spanLengthSquared;
                     if (t <= 0.0f || t >= 1.0f)
                         continue;
-                    if ((point - (start + span * t)).LengthSquared() <= epsilonSquared)
+                    if ((point - (start + span * t)).LengthSquared() <= junctionToleranceSquared)
                         cuts.Add((t, item));
                 }
                 if (cuts.Count == 0)
@@ -1169,8 +1549,34 @@ public sealed class CsgSolid
                     Register(face, previous, to);
             }
         }
-        foreach (var edge in edges.Values)
-            closed &= edge.Count == 2 && edge.Winding == 0;
+        // Solids that touch along an edge pinch it: four or more faces with balanced winding still bound a
+        // volume, so ray parity remains valid. Unbalanced or odd edges are cracks, tolerated up to a budget.
+        var crackLength = 0.0;
+        var totalLength = 0.0;
+        foreach (var (key, edge) in edges)
+        {
+            var length = (welder.Positions[(int)(key >> 32)] - welder.Positions[(int)(uint)key]).Length();
+            totalLength += length;
+            if ((edge.Count & 1) != 0 || edge.Winding != 0)
+                crackLength += length;
+        }
+        closed &= crackLength <= System.Math.Max(epsilon * CrackBudgetEpsilons, totalLength * CrackBudgetFraction);
+        if (crackLength > 0.0)
+        {
+            _crackWelder = welder;
+            _openEdges = [];
+            foreach (var (key, edge) in edges)
+            {
+                if (edge.Winding == 0)
+                    continue;
+                // Winding counts edges running from the lower id to the higher one; fill in the other direction.
+                var low = (int)(key >> 32);
+                var high = (int)(uint)key;
+                var (from, to) = edge.Winding > 0 ? (high, low) : (low, high);
+                for (var i = 0; i < System.Math.Abs(edge.Winding); ++i)
+                    _openEdges.Add((from, to, welder.Positions[from], welder.Positions[to], _faces[edge.Face].Shared));
+            }
+        }
 
         // Components in order of their first face.
         var componentIndices = new int[faceCount];
@@ -1280,6 +1686,28 @@ public sealed class CsgSolid
 
         public int Add(Vec3 point)
         {
+            var found = Find(point);
+            if (found >= 0)
+                return found;
+            if (Count == Positions.Length)
+            {
+                Array.Resize(ref Positions, Count * 2);
+                Array.Resize(ref _next, Count * 2);
+            }
+            var index = Count++;
+            Positions[index] = point;
+            var key = ((long)global::System.Math.Floor(point.X * _inverseCell),
+                (long)global::System.Math.Floor(point.Y * _inverseCell),
+                (long)global::System.Math.Floor(point.Z * _inverseCell));
+            ref var cell = ref CollectionsMarshal.GetValueRefOrAddDefault(_cells, key, out var exists);
+            _next[index] = exists ? cell : -1;
+            cell = index;
+            return index;
+        }
+
+        /// <summary>Earliest representative within epsilon of the point, or -1.</summary>
+        public int Find(Vec3 point)
+        {
             var x = point.X * _inverseCell;
             var y = point.Y * _inverseCell;
             var z = point.Z * _inverseCell;
@@ -1302,20 +1730,7 @@ public sealed class CsgSolid
                         best = id;
                 }
             }
-            if (best != int.MaxValue)
-                return best;
-
-            if (Count == Positions.Length)
-            {
-                Array.Resize(ref Positions, Count * 2);
-                Array.Resize(ref _next, Count * 2);
-            }
-            var index = Count++;
-            Positions[index] = point;
-            ref var cell = ref CollectionsMarshal.GetValueRefOrAddDefault(_cells, (cx, cy, cz), out var exists);
-            _next[index] = exists ? cell : -1;
-            cell = index;
-            return index;
+            return best == int.MaxValue ? -1 : best;
         }
     }
 

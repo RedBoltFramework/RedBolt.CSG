@@ -403,7 +403,7 @@ public class CsgShowcase : Application
         CsgRoot? root = null;
         var rebuildRevision = 0u;
         if (hasSurfaceHit)
-            root = BeginCsgOperation(hit, isMud, ref destination, out rebuildRevision);
+            root = BeginCsgOperation(hit, aimRay.Direction, isMud, ref destination, out rebuildRevision);
 
         var node = _scene!.CreateChild(isMud ? "Mud round" : "Explosive round");
         node.SetWorldPosition(_gunNode!.LocalToWorld(new Vector3f(0.0f, 0.04f, 0.9f)));
@@ -452,8 +452,8 @@ public class CsgShowcase : Application
         }
     }
 
-    private CsgRoot? BeginCsgOperation(RayQueryResult hit, bool isMud, ref Vector3f projectileDestination,
-        out uint rebuildRevision)
+    private CsgRoot? BeginCsgOperation(RayQueryResult hit, Vector3f shotDirection, bool isMud,
+        ref Vector3f projectileDestination, out uint rebuildRevision)
     {
         rebuildRevision = 0;
         var targetNode = hit.Node;
@@ -463,20 +463,19 @@ public class CsgShowcase : Application
         if (!isMud && !_destructibleStructures.Contains(targetNode.Id))
             return null;
 
-        _operationCounts.TryGetValue(targetNode.Id, out var operationCount);
-        if (operationCount >= MaxOperationsPerStructure)
-            return null;
-        _operationCounts[targetNode.Id] = operationCount + 1;
-
         root.AutoApplyResults = false;
         _stagedRoots.Add(root);
 
-        var brushNode = targetNode.CreateChild(isMud ? "Mud addition" : "Explosion subtraction");
-        var brushPosition = hit.Position + (isMud ? hit.Normal * 0.12f : -hit.Normal * 0.08f);
+        var brushNode = GetBrushSpace(targetNode).CreateChild(isMud ? "Mud addition" : "Explosion subtraction");
+        // The explosion cutter starts a little in front of the hit and runs well past the structure, so it always
+        // opens a through hole: a hit on mud stands off the wall, and a shorter cutter would leave a crater floor.
+        var brushPosition = hit.Position + (isMud
+            ? hit.Normal * 0.12f
+            : shotDirection * (ExplosionDepth * 0.5f - ExplosionStandoff));
         if (isMud)
         {
             // Several rounds may be in flight before the first result is visible. Do not create coincident union
-            // operands in that case: they are pathological for BSP and make a rapid mud pile exponentially costly.
+            // operands in that case: identical overlapping solids are degenerate for any boolean.
             // Advance the predicted contact point along the surface normal so pending rounds build the future pile.
             var displacement = Vector3f.Zero;
             while (HasNearbyMudPlacement(targetNode.Id, brushPosition + displacement))
@@ -486,10 +485,10 @@ public class CsgShowcase : Application
             _mudPlacements.Add(new MudPlacement { TargetNodeId = targetNode.Id, Center = brushPosition });
         }
         brushNode.SetWorldPosition(brushPosition);
-        brushNode.SetWorldRotation(new Quaternion(Vector3f.Up, hit.Normal));
-        SetOrientedWorldScale(brushNode, isMud
-            ? new Vector3f(0.95f, 0.62f, 0.95f)
-            : new Vector3f(2.0f, 1.5f, 2.0f));
+        // Mud settles on the struck surface. An explosion bores along the shot: the normal of a mud blob's face can
+        // lie almost parallel to the wall, and a cylinder along it would cut a rectangular trench instead of a hole.
+        brushNode.SetWorldRotation(new Quaternion(Vector3f.Up, isMud ? hit.Normal : -shotDirection));
+        brushNode.SetScale(isMud ? new Vector3f(0.95f, 0.62f, 0.95f) : new Vector3f(2.0f, ExplosionDepth, 2.0f));
         var brush = brushNode.CreateComponent<CsgBrush>();
         brush.Operation = isMud ? CsgOperation.Union : CsgOperation.DifferenceAB;
         // Keep both interactive operations low-poly. Explosions use a 124-triangle cylinder for round openings;
@@ -545,6 +544,9 @@ public class CsgShowcase : Application
                     }
                 }
             }
+            // Fold applied brushes into the structure so the next round costs one boolean against the current
+            // shape instead of a replay of every earlier round. Bake declines while a rebuild is outstanding.
+            root.Bake();
         }
     }
 
@@ -557,19 +559,19 @@ public class CsgShowcase : Application
         _projectiles.RemoveAt(index);
     }
 
-    private static void SetOrientedWorldScale(Node node, Vector3f desiredScale)
+    /// <summary>
+    /// Child of a structure that cancels its non-uniform scale. Brushes placed under it keep their shape at any
+    /// orientation; directly under a scaled structure, a tilted brush would be sheared into a slab.
+    /// </summary>
+    private static Node GetBrushSpace(Node structure)
     {
-        // Node.SetWorldScale assumes aligned parent axes. CSG roots are non-uniformly scaled boxes, so account for
-        // the brush rotation when converting the desired world-space cylinder dimensions into local scale.
-        var parentScale = node.Parent!.WorldScale;
-        var rotation = node.Rotation;
-        var xAxis = parentScale * (rotation * Vector3f.Right);
-        var yAxis = parentScale * (rotation * Vector3f.Up);
-        var zAxis = parentScale * (rotation * Vector3f.Forward);
-        node.SetScale(new Vector3f(
-            desiredScale.X / xAxis.Length,
-            desiredScale.Y / yAxis.Length,
-            desiredScale.Z / zAxis.Length));
+        var space = structure.GetChild(BrushSpaceName);
+        if (space is not null)
+            return space;
+        space = structure.CreateChild(BrushSpaceName);
+        var scale = structure.Scale;
+        space.SetScale(new Vector3f(1.0f / scale.X, 1.0f / scale.Y, 1.0f / scale.Z));
+        return space;
     }
 
     private void CreateImpactEffect(Vector3f position, bool isMud)
@@ -706,6 +708,7 @@ public class CsgShowcase : Application
 
     private const uint WorldViewMask = 1;
     private const uint ForegroundViewMask = 2;
+    private const string BrushSpaceName = "Brushes";
     private const string MudMaterialName = "Materials/CSG/Mud.xml";
     private const string MudOperandModelName = "Models/CSG/LowPolyMudBall.mdl";
     private const float EyeHeight = 1.7f;
@@ -714,12 +717,12 @@ public class CsgShowcase : Application
     private const float SprintSpeed = 8.0f;
     private const float ProjectileSpeed = 26.0f;
     private const float MaxProjectileDistance = 50.0f;
-    private const int MaxOperationsPerStructure = 18;
+    private const float ExplosionDepth = 4.0f;
+    private const float ExplosionStandoff = 0.6f;
     private const float MudStackStep = 0.5f;
     private const float MudMinimumSeparation = 0.42f;
 
     private readonly HashSet<uint> _destructibleStructures = [];
-    private readonly Dictionary<uint, int> _operationCounts = [];
     private readonly List<Projectile> _projectiles = [];
     private readonly List<ImpactEffect> _impactEffects = [];
     private readonly List<MudPlacement> _mudPlacements = [];
