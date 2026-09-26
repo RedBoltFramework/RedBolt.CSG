@@ -33,9 +33,40 @@ public sealed class CsgTriangulatedModel
 
 public static partial class Csg
 {
+    /// <summary>
+    /// Distance from the line through its neighbors, relative to the largest coordinate of the polygon, within
+    /// which a vertex counts as part of a straight run: a few float roundings. Faces that share a run then agree
+    /// that it is straight, so neither claims the sliver between the run and its chord.
+    /// </summary>
+    private const double StraightDistance = 1e-6;
+
+
     /// <summary>Triangulate polygon into triangle list indices (triplets).</summary>
-    public static bool TriangulatePolygon(CsgPolygon poly, List<uint> outIndices)
+    /// <remarks>
+    /// Ear clipping in the plane of the polygon with double-precision orientation tests. An ear tip must turn
+    /// strictly toward the inside, so a vertex on a straight run of the boundary never becomes a zero-area
+    /// triangle whose diagonal lies along the boundary, and no other vertex may lie in the ear or on its
+    /// diagonal. Vertices at the same position as an ear corner, as in a polygon that visits a bridge twice, do
+    /// not block it. Only when no such ear exists is the most convex vertex clipped.
+    /// </remarks>
+    public static bool TriangulatePolygon(CsgPolygon poly, List<uint> outIndices) =>
+        TriangulatePolygon(poly, outIndices, null);
+
+    /// <summary>
+    /// Triangulate a polygon; a vertex marked in <paramref name="straight"/> lies on a run shared with one
+    /// neighbor and is not an ear tip while it lies within rounding of its neighbors' chord.
+    /// </summary>
+    internal static bool TriangulatePolygon(CsgPolygon poly, List<uint> outIndices, IReadOnlyList<bool>? straight) =>
+        TriangulatePolygon(poly, outIndices, straight, out _);
+
+    /// <summary>
+    /// Triangulate a polygon, reporting whether every triangle was a proper ear. When no ear passes the checks the
+    /// most convex vertex is clipped anyway, which can leave a flat or inverted triangle.
+    /// </summary>
+    internal static bool TriangulatePolygon(CsgPolygon poly, List<uint> outIndices, IReadOnlyList<bool>? straight,
+        out bool clean)
     {
+        clean = true;
         var numVertices = poly.Vertices.Count;
         if (numVertices < 3)
             return false;
@@ -47,152 +78,151 @@ public static partial class Csg
             return true;
         }
 
-        // Project to 2D for robustness
         CsgCommon.MakeAxesFromNormal(poly.Plane.Normal, out var axisU, out var axisV);
-
-        var verts2D = new Vector2f[numVertices];
+        var xs = new double[numVertices];
+        var ys = new double[numVertices];
+        var extent = 0.0;
         for (var i = 0; i < numVertices; ++i)
         {
             var p = poly.Vertices[i].GetPosition();
-            verts2D[i] = new Vector2f(p.DotProduct(axisU), p.DotProduct(axisV));
+            extent = System.Math.Max(extent, System.Math.Max(System.Math.Abs(p.X),
+                System.Math.Max(System.Math.Abs(p.Y), System.Math.Abs(p.Z))));
+            xs[i] = (double)p.X * axisU.X + (double)p.Y * axisU.Y + (double)p.Z * axisU.Z;
+            ys[i] = (double)p.X * axisV.X + (double)p.Y * axisV.Y + (double)p.Z * axisV.Z;
         }
 
-        var indices = new List<uint>(numVertices);
-        for (uint i = 0; i < numVertices; ++i)
-            indices.Add(i);
-
-        var count = numVertices;
-        var maxIterations = count * 2;
-
-        while (count > 2)
+        // Orient tests by the winding of the projected polygon, whatever the handedness of the projection.
+        var area = 0.0;
+        for (var i = 0; i < numVertices; ++i)
         {
-            if (maxIterations-- <= 0)
-                break;
+            var j = (i + 1) % numVertices;
+            area += xs[i] * ys[j] - xs[j] * ys[i];
+        }
+        var winding = area < 0.0 ? -1.0 : 1.0;
 
-            var earFound = false;
+        var ring = new List<int>(numVertices);
+        for (var i = 0; i < numVertices; ++i)
+            ring.Add(i);
 
-            // Pass 1: Look for a valid ear
+        while (ring.Count > 3)
+        {
+            var count = ring.Count;
+            var clip = -1;
+            var fallback = -1;
+            var fallbackTurn = double.NegativeInfinity;
             for (var i = 0; i < count; ++i)
             {
-                var prev = (i + count - 1) % count;
-                var next = (i + 1) % count;
-
-                var u = indices[prev];
-                var v = indices[i];
-                var w = indices[next];
-
-                // Check convexity using 3D normal
-                var p0_3d = poly.Vertices[(int)u].GetPosition();
-                var p1_3d = poly.Vertices[(int)v].GetPosition();
-                var p2_3d = poly.Vertices[(int)w].GetPosition();
-                var e1_3d = p1_3d - p0_3d;
-                var e2_3d = p2_3d - p1_3d;
-
-                if (e1_3d.CrossProduct(e2_3d).DotProduct(poly.Plane.Normal) < -MathDefs.Epsilon)
-                    continue; // Reflex
-
-                var p0 = verts2D[u];
-                var p1 = verts2D[v];
-                var p2 = verts2D[w];
-
-                // Check if any other vertex is inside the triangle
-                var containsVertex = false;
-                for (var j = 0; j < count; ++j)
+                var a = ring[(i + count - 1) % count];
+                var b = ring[i];
+                var c = ring[(i + 1) % count];
+                var turn = Orient(a, b, c);
+                var scale = Length(a, b) * Length(b, c);
+                var normalized = scale > 0.0 ? turn / scale : 0.0;
+                if (normalized > fallbackTurn)
                 {
-                    if (j == prev || j == i || j == next)
-                        continue;
-
-                    var p = verts2D[indices[j]];
-
-                    var v0 = p2 - p0;
-                    var v1 = p1 - p0;
-                    var v2 = p - p0;
-
-                    var dot00 = v0.DotProduct(v0);
-                    var dot01 = v0.DotProduct(v1);
-                    var dot02 = v0.DotProduct(v2);
-                    var dot11 = v1.DotProduct(v1);
-                    var dot12 = v1.DotProduct(v2);
-
-                    var denom = dot00 * dot11 - dot01 * dot01;
-                    if (MathF.Abs(denom) < MathDefs.Epsilon)
-                        continue;
-
-                    var invDenom = 1.0f / denom;
-                    var uBary = (dot11 * dot02 - dot01 * dot12) * invDenom;
-                    var vBary = (dot00 * dot12 - dot01 * dot02) * invDenom;
-
-                    if (uBary >= -1e-5f && vBary >= -1e-5f && uBary + vBary <= 1.0f + 1e-5f)
-                    {
-                        containsVertex = true;
-                        break;
-                    }
+                    fallbackTurn = normalized;
+                    fallback = i;
                 }
-
-                if (!containsVertex)
+                // A tip within rounding of a neighbor closes a zero-length edge: the needle has no area to invert, and
+                // leaving it would block every ear around it.
+                var needle = extent * StraightDistance;
+                if (straight?[b] != true && turn >= 0.0 && (Length(a, b) <= needle || Length(b, c) <= needle))
                 {
-                    outIndices.Add(u);
-                    outIndices.Add(v);
-                    outIndices.Add(w);
-
-                    indices.RemoveAt(i);
-                    --count;
-                    earFound = true;
+                    clip = i;
                     break;
                 }
+                // Distance of b from the chord a-c is twice the ear's area over the chord length.
+                var chord = Length(a, c);
+                if (turn <= 0.0 || turn <= chord * extent * StraightDistance || IsStraight(b)
+                    || count == 4 && IsStraight(ring[(i + 2) % count]) || ContainsOther(a, b, c))
+                    continue;
+                clip = i;
+                break;
             }
-
-            // Pass 2: Force clip first convex ear
-            if (!earFound)
+            if (clip < 0)
             {
-                for (var i = 0; i < count; ++i)
-                {
-                    var prev = (i + count - 1) % count;
-                    var next = (i + 1) % count;
-                    var u = indices[prev];
-                    var v = indices[i];
-                    var w = indices[next];
-
-                    var p0_3d = poly.Vertices[(int)u].GetPosition();
-                    var p1_3d = poly.Vertices[(int)v].GetPosition();
-                    var p2_3d = poly.Vertices[(int)w].GetPosition();
-                    var e1_3d = p1_3d - p0_3d;
-                    var e2_3d = p2_3d - p1_3d;
-
-                    if (e1_3d.CrossProduct(e2_3d).DotProduct(poly.Plane.Normal) >= -MathDefs.Epsilon)
-                    {
-                        outIndices.Add(u);
-                        outIndices.Add(v);
-                        outIndices.Add(w);
-                        indices.RemoveAt(i);
-                        --count;
-                        earFound = true;
-                        break;
-                    }
-                }
+                clip = fallback;
+                clean = false;
             }
+            outIndices.Add((uint)ring[(clip + count - 1) % count]);
+            outIndices.Add((uint)ring[clip]);
+            outIndices.Add((uint)ring[(clip + 1) % count]);
+            ring.RemoveAt(clip);
+        }
+        outIndices.Add((uint)ring[0]);
+        outIndices.Add((uint)ring[1]);
+        outIndices.Add((uint)ring[2]);
+        return true;
 
-            // Pass 3: Force clip any ear
-            if (!earFound)
-            {
-                const int i = 0;
-                var prev = (i + count - 1) % count;
-                var next = (i + 1) % count;
-                outIndices.Add(indices[prev]);
-                outIndices.Add(indices[i]);
-                outIndices.Add(indices[next]);
-                indices.RemoveAt(i);
-                --count;
-            }
+        // A vertex on a shared run within rounding. With four vertices left, clipping the vertex opposite one
+        // would leave the run itself as the last triangle.
+        bool IsStraight(int vertex)
+        {
+            if (straight?[vertex] != true)
+                return false;
+            var at = ring.IndexOf(vertex);
+            var previous = ring[(at + ring.Count - 1) % ring.Count];
+            var next = ring[(at + 1) % ring.Count];
+            var chord = Length(previous, next);
+            return chord <= 0.0 || System.Math.Abs(Orient(previous, vertex, next)) / chord < extent * StraightDistance;
         }
 
-        return true;
+        double Orient(int a, int b, int c) =>
+            winding * ((xs[b] - xs[a]) * (ys[c] - ys[a]) - (ys[b] - ys[a]) * (xs[c] - xs[a]));
+
+        double Length(int a, int b)
+        {
+            var dx = xs[b] - xs[a];
+            var dy = ys[b] - ys[a];
+            return System.Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        bool Same(int a, int b) => xs[a] == xs[b] && ys[a] == ys[b];
+
+        // A vertex inside the ear blocks it, and so does one within rounding of the new diagonal: clipping past a
+        // vertex on the diagonal would strand it on a straight run with nothing left to connect to. Vertices on
+        // the ear's own boundary edges, or their extensions, do not block it.
+        bool ContainsOther(int a, int b, int c)
+        {
+            var diagonal = Length(c, a) * extent * StraightDistance;
+            foreach (var j in ring)
+            {
+                if (j == a || j == b || j == c || Same(j, a) || Same(j, b) || Same(j, c))
+                    continue;
+                if (Orient(a, b, j) <= 0.0 || Orient(b, c, j) <= 0.0)
+                    continue;
+                var side = Orient(c, a, j);
+                if (side > 0.0)
+                    return true;
+                // Within rounding of the diagonal counts only alongside its interior: a vertex next to an end of it
+                // closes a tiny edge rather than lying on a straight run.
+                if (side >= -diagonal)
+                {
+                    var along = (xs[j] - xs[c]) * (xs[a] - xs[c]) + (ys[j] - ys[c]) * (ys[a] - ys[c]);
+                    var length = (xs[a] - xs[c]) * (xs[a] - xs[c]) + (ys[a] - ys[c]) * (ys[a] - ys[c]);
+                    if (along > length * 1e-3 && along < length * (1.0 - 1e-3))
+                        return true;
+                }
+            }
+            return false;
+        }
     }
 
     /// <summary>Triangulate a collection of polygons into one indexed triangle list.</summary>
     /// <remarks>Output vertices are returned as full <see cref="ModelVertex"/> (unpacked).</remarks>
     public static bool TriangulateGeometry(IReadOnlyList<CsgPolygon> polys, float epsilon,
-        List<ModelVertex> outVertices, List<uint> outIndexData)
+        List<ModelVertex> outVertices, List<uint> outIndexData) =>
+        TriangulateGeometry(polys, (poly, _, indices) => TriangulatePolygon(poly, indices), null, 0, epsilon,
+            outVertices, outIndexData);
+
+    /// <summary>
+    /// Triangulate polygons with triangles from <paramref name="triangulate"/>, given each polygon and its index.
+    /// Vertices are shared when they coincide and their attributes agree; <paramref name="vertexKey"/>, when given,
+    /// names each polygon vertex's position by an id below <paramref name="keySpace"/> so no hashing is needed.
+    /// </summary>
+    private static bool TriangulateGeometry(IReadOnlyList<CsgPolygon> polys,
+        Func<CsgPolygon, int, List<uint>, bool> triangulate, Func<int, int, int>? vertexKey, int keySpace,
+        float epsilon, List<ModelVertex> outVertices, List<uint> outIndexData)
     {
         outVertices.Clear();
         outIndexData.Clear();
@@ -215,59 +245,113 @@ public static partial class Csg
         outVertices.EnsureCapacity(estimatedVertexCount);
         outIndexData.EnsureCapacity(estimatedIndexCount);
 
-        // Each bucket is a singly linked chain through `next`, in insertion order, so the earliest
-        // matching vertex wins as it would in a per-bucket list.
-        var buckets = new Dictionary<Vector3i, (int Head, int Tail)>(estimatedVertexCount);
+        // Vertices with one key form a singly linked chain through `next`. Keys are the ids given, else cells of
+        // quantized positions.
         var next = new List<int>(estimatedVertexCount);
+        var headsById = vertexKey is not null ? new int[keySpace] : null;
+        if (headsById is not null)
+            Array.Fill(headsById, -1);
+        var headsByCell = vertexKey is null ? new Dictionary<Vector3i, int>(estimatedVertexCount) : null;
+        var polyIndex = 0;
 
-        uint GetOrCreateVertexIndex(in ModelVertex vertex)
+        uint GetOrCreateVertexIndex(in ModelVertex vertex, int localIndex)
         {
-            var key = CsgCommon.QuantizePosition(vertex.GetPosition(), invEps);
-            ref var bucket = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(
-                buckets, key, out var exists);
-            if (exists)
+            var key = 0;
+            var cell = default(Vector3i);
+            int head;
+            if (headsById is not null)
             {
-                var span = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(outVertices);
-                for (var existingIndex = bucket.Head; existingIndex >= 0; existingIndex = next[existingIndex])
-                {
-                    ref readonly var existing = ref span[existingIndex];
+                key = vertexKey!(polyIndex, localIndex);
+                head = headsById[key];
+            }
+            else
+            {
+                cell = CsgCommon.QuantizePosition(vertex.GetPosition(), invEps);
+                head = headsByCell!.TryGetValue(cell, out var found) ? found : -1;
+            }
 
-                    // Fast reject by position with CSG epsilon.
-                    if (!existing.Position.ApproximatelyEquivalent(vertex.Position, eps))
-                        continue;
+            var span = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(outVertices);
+            for (var existingIndex = head; existingIndex >= 0; existingIndex = next[existingIndex])
+            {
+                ref readonly var existing = ref span[existingIndex];
 
-                    // Other attributes are expected to match very closely if the vertex is truly shared.
-                    if (existing.Equals(vertex))
-                        return (uint)existingIndex;
-                }
+                // Faces that share a vertex hold the same position exactly; merging a vertex into one merely
+                // nearby would move it for some faces and not for others, opening the mesh along their edges.
+                if (existing.Position != vertex.Position)
+                    continue;
+
+                // Other attributes are expected to match very closely if the vertex is truly shared.
+                if (SameAttributes(existing, vertex))
+                    return (uint)existingIndex;
             }
 
             var newIndex = outVertices.Count;
             outVertices.Add(CsgCommon.CloneVertex(vertex));
-            next.Add(-1);
-            if (exists)
-                next[bucket.Tail] = newIndex;
+            next.Add(head);
+            if (headsById is not null)
+                headsById[key] = newIndex;
             else
-                bucket.Head = newIndex;
-            bucket.Tail = newIndex;
+                headsByCell![cell] = newIndex;
             return (uint)newIndex;
         }
 
         var triIndices = new List<uint>();
-        foreach (var poly in polys)
+        for (polyIndex = 0; polyIndex < polys.Count; ++polyIndex)
         {
+            var poly = polys[polyIndex];
             if (poly.Vertices.Count < 3)
                 continue;
 
-            if (!TriangulatePolygon(poly, triIndices))
+            if (!triangulate(poly, polyIndex, triIndices))
                 continue;
 
             var vertices = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(poly.Vertices);
             foreach (var polyVertexIndex in triIndices)
-                outIndexData.Add(GetOrCreateVertexIndex(vertices[(int)polyVertexIndex]));
+                outIndexData.Add(GetOrCreateVertexIndex(vertices[(int)polyVertexIndex], (int)polyVertexIndex));
         }
 
         return outIndexData.Count != 0;
+    }
+
+    /// <summary>
+    /// <see cref="ModelVertex.Equals(ModelVertex)"/> for vertices at one position, by reference and with the
+    /// attribute most likely to differ, the normal, first. Attribute arrays shared by both compare at once.
+    /// </summary>
+    private static bool SameAttributes(in ModelVertex a, in ModelVertex b)
+    {
+        if (!a.Normal.ApproximatelyEquivalent(b.Normal) || !a.Tangent.ApproximatelyEquivalent(b.Tangent)
+            || !a.Binormal.ApproximatelyEquivalent(b.Binormal))
+            return false;
+        if (!ReferenceEquals(a.Uv, b.Uv))
+        {
+            for (var i = 0; i < ModelVertex.MaxUVs; ++i)
+            {
+                if (!a.Uv[i].ApproximatelyEquivalent(b.Uv[i]))
+                    return false;
+            }
+        }
+        if (!ReferenceEquals(a.Color, b.Color))
+        {
+            for (var i = 0; i < ModelVertex.MaxColors; ++i)
+            {
+                if (!a.Color[i].ApproximatelyEquivalent(b.Color[i]))
+                    return false;
+            }
+        }
+        return a.BlendIndices.ApproximatelyEquivalent(b.BlendIndices)
+            && a.BlendWeights.ApproximatelyEquivalent(b.BlendWeights);
+    }
+
+    /// <summary>Triangulate a solid into a render mesh without cracks.</summary>
+    /// <remarks>
+    /// Solids share every edge vertex between neighboring faces at identical positions, so the triangles the solid
+    /// already holds meet exactly and are emitted as they are.
+    /// </remarks>
+    public static CsgTriangulatedModel TriangulateSolid(CsgSolid solid, float epsilon = CsgCommon.DefaultEpsilon)
+    {
+        ArgumentNullException.ThrowIfNull(solid);
+        return Triangulate(solid.Faces, (_, face, indices) => solid.CopyTriangles(face, indices), epsilon,
+            solid.VertexKey, solid.VertexKeySpace);
     }
 
     /// <summary>Triangulate polygons into CPU representation of CSG output.</summary>
@@ -275,26 +359,34 @@ public static partial class Csg
         float epsilon = CsgCommon.DefaultEpsilon) => TriangulatePolygons((IReadOnlyList<CsgPolygon>)polygons, epsilon);
 
     /// <summary>Triangulate polygons into CPU representation of CSG output.</summary>
-    /// <remarks>Input polygons are not modified; output vertices never share attribute arrays with them.</remarks>
+    /// <remarks>
+    /// Input polygons are not modified; output vertices never share attribute arrays with them. Polygons are
+    /// triangulated as given.
+    /// </remarks>
     public static CsgTriangulatedModel TriangulatePolygons(IReadOnlyList<CsgPolygon> polygons,
-        float epsilon = CsgCommon.DefaultEpsilon)
+        float epsilon = CsgCommon.DefaultEpsilon) =>
+        Triangulate(polygons, (polygon, _, indices) => TriangulatePolygon(polygon, indices), epsilon);
+
+    /// <summary>Group polygons by source geometry and emit one indexed triangle list per group.</summary>
+    private static CsgTriangulatedModel Triangulate(IReadOnlyList<CsgPolygon> polygons,
+        Func<CsgPolygon, int, List<uint>, bool> triangulate, float epsilon, Func<int, int, int>? vertexKey = null,
+        int keySpace = 0)
     {
         var result = new CsgTriangulatedModel();
 
         if (polygons.Count == 0)
             return result;
 
-        var groups = new Dictionary<uint, List<CsgPolygon>>();
-        foreach (var sourcePolygon in polygons)
+        var groups = new Dictionary<uint, List<int>>();
+        for (var i = 0; i < polygons.Count; ++i)
         {
-            // Simplification copies polygons before editing them, so inputs are grouped as they are.
-            var p = sourcePolygon;
+            var p = polygons[i];
             if (!groups.TryGetValue(p.Shared, out var group))
             {
                 group = [];
                 groups.Add(p.Shared, group);
             }
-            group.Add(p);
+            group.Add(i);
         }
 
         var groupKeys = new List<uint>(groups.Keys);
@@ -304,16 +396,18 @@ public static partial class Csg
 
         foreach (var sharedKey in groupKeys)
         {
-            var polys = groups[sharedKey];
-
-            SimplifyPolygons(polys, epsilon, true);
-
+            var members = groups[sharedKey];
+            var polys = new CsgPolygon[members.Count];
+            for (var i = 0; i < members.Count; ++i)
+                polys[i] = polygons[members[i]];
             var geometry = new CsgTriangulatedModel.Geometry
             {
                 Shared = sharedKey
             };
 
-            if (!TriangulateGeometry(polys, epsilon, geometry.Vertices, geometry.IndexData))
+            Func<int, int, int>? groupKey = vertexKey is null ? null : (index, local) => vertexKey(members[index], local);
+            if (!TriangulateGeometry(polys, (polygon, index, indices) => triangulate(polygon, members[index], indices),
+                    groupKey, keySpace, epsilon, geometry.Vertices, geometry.IndexData))
                 continue;
 
             if (geometry.Vertices.Count == 0 || geometry.IndexData.Count == 0)

@@ -12,11 +12,6 @@ using RedBolt.Math;
 
 public static partial class Csg
 {
-    private static bool IsCsgSimplifyDiagnosticsActive() => false;
-    private static void CsgSimplifyDiagLog(string text)
-    {
-    }
-
     private sealed class SimplePolygonFailureDetails
     {
         public enum FailureType
@@ -1200,30 +1195,21 @@ public static partial class Csg
     {
         output = new CsgPolygon();
         if (a.Shared != b.Shared)
-        {
-            CsgSimplifyDiagLog("CSG simplify: merge reject (shared mismatch)");
             return false;
-        }
 
         var na = a.Plane.Normal.NormalizedOrDefault(Vector3f.Zero);
         var nb = b.Plane.Normal.NormalizedOrDefault(Vector3f.Zero);
         var planeDot = na == Vector3f.Zero || nb == Vector3f.Zero ? 0.0f : na.DotProduct(nb);
         var planeDDiff = MathF.Abs(a.Plane.D - b.Plane.D);
         if (planeDot < 1.0f - normalEps || planeDDiff > epsilon)
-        {
-            CsgSimplifyDiagLog("CSG simplify: merge reject (plane mismatch)");
             return false;
-        }
 
         CsgCommon.MakeAxesFromNormal(a.Plane.Normal, out var axisU, out var axisV);
 
         var aCount = a.Vertices.Count;
         var bCount = b.Vertices.Count;
         if (aCount < 3 || bCount < 3)
-        {
-            CsgSimplifyDiagLog("CSG simplify: merge reject (degenerate input)");
             return false;
-        }
 
         var a0 = aEdgeStart;
         var a1 = (aEdgeStart + 1) % aCount;
@@ -1238,10 +1224,7 @@ public static partial class Csg
         var d01Sq = (av0 - bv1).LengthSquared;
         var d10Sq = (av1 - bv0).LengthSquared;
         if (d01Sq > epsSq || d10Sq > epsSq)
-        {
-            CsgSimplifyDiagLog("CSG simplify: merge reject (edge mismatch)");
             return false;
-        }
 
         output.Shared = a.Shared;
         output.Plane = a.Plane;
@@ -1261,10 +1244,7 @@ public static partial class Csg
 
         CleanupPolygonVertices(output, epsilon);
         if (IsDegeneratePolygon(output))
-        {
-            CsgSimplifyDiagLog("CSG simplify: merge reject (degenerate output)");
             return false;
-        }
 
         var areaA = PolygonAbsAreaInPlane(a, axisU, axisV);
         var areaB = PolygonAbsAreaInPlane(b, axisU, axisV);
@@ -1278,20 +1258,14 @@ public static partial class Csg
             {
                 if (!TryMergeByBoundaryCancellation(a, b, axisU, axisV, normalEps, epsilon, epsSq,
                         out var canceled))
-                {
-                    CsgSimplifyDiagLog("CSG simplify: merge reject (non-simple polygon)");
                     return false;
-                }
                 output = canceled;
             }
         }
 
         var areaOut = PolygonAbsAreaInPlane(output, axisU, axisV);
         if (!(MathF.Abs(areaOut - expected) <= tolerance))
-        {
-            CsgSimplifyDiagLog("CSG simplify: merge reject (area mismatch)");
             return false;
-        }
 
         return true;
     }

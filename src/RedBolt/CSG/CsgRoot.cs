@@ -78,6 +78,8 @@ public partial class CsgRoot : CsgComponent
         public ResourceRefList BaseMaterials = new();
         public BrushStep RootStep = new();
         public CsgSolid? CachedSolid;
+        // The root polygons are the faces of a baked result, which form a solid as they are.
+        public bool RootIsResult;
         public CsgSolid? ResultSolid;
         public int ReusedRootChildren;
         public List<BrushFingerprint> FlatBrushes = [];
@@ -285,6 +287,7 @@ public partial class CsgRoot : CsgComponent
         }
         if (job.CachedSolid is null)
         {
+            job.RootIsResult = _baked is not null;
             job.RootStep.Polygons = _baked is not null
                 ? RescalePolygons(_baked.Solid.Faces, job.MetricScale / _baked.MetricScale)
                 : Csg.BuildPolygonsFromModel(job.BaseModel, Matrix3x4.FromScale(job.MetricScale), 0);
@@ -856,13 +859,15 @@ public partial class CsgRoot : CsgComponent
 
         var timer = new HiresTimer();
         // The job owns its extracted polygons, so solids adopt them without copying.
-        var resultSolid = job.CachedSolid ?? new CsgSolid(job.RootStep.Polygons, job.Epsilon, false);
+        var resultSolid = job.CachedSolid ?? (job.RootIsResult
+            ? new CsgSolid(job.RootStep.Polygons, job.Epsilon, false)
+            : CsgSolid.FromOperand(job.RootStep.Polygons, job.Epsilon));
         EvaluateOperationTree(job.RootStep, ref resultSolid, job.Epsilon, job.ReusedRootChildren);
         job.ResultSolid = resultSolid;
         CsgTriangulatedModel? triangulated = null;
         if (resultSolid.FaceCount != 0)
         {
-            triangulated = Csg.TriangulatePolygons(resultSolid.Faces, job.Epsilon);
+            triangulated = Csg.TriangulateSolid(resultSolid, job.Epsilon);
             ToNodeSpace(triangulated, job.MetricScale);
         }
         var prepared = triangulated is not null
@@ -1034,7 +1039,7 @@ public partial class CsgRoot : CsgComponent
         for (var childIndex = startChild; childIndex < step.Children.Count; ++childIndex)
         {
             var child = step.Children[childIndex];
-            var childSolid = new CsgSolid(child.Polygons, epsilon, false);
+            var childSolid = CsgSolid.FromOperand(child.Polygons, epsilon);
             if (child.Children.Count != 0)
                 EvaluateOperationTree(child, ref childSolid, epsilon);
 

@@ -357,7 +357,8 @@ public static partial class Csg
     /// <remarks>
     /// The face BVHs find surfaces that meet. Whole connected regions without a surface intersection
     /// are classified once; only faces at the intersection frontier are split, along the intersection
-    /// segments and the edges of coplanar overlaps. Operands must be closed meshes.
+    /// segments. Operands must be closed meshes. Both operands are split at the same intersection vertices, so the
+    /// result is closed as well and can be used as an operand again.
     /// </remarks>
     public static CsgSolid BooleanOperation(CsgSolid a, CsgSolid b, CsgOperation operation,
         float epsilon = CsgCommon.DefaultEpsilon)
@@ -372,7 +373,7 @@ public static partial class Csg
     /// <summary>Extract a reusable polygonal solid from a model in the supplied local frame.</summary>
     public static CsgSolid BuildSolidFromModel(Model? model, Matrix3x4 transform, uint meshId = 0,
         float epsilon = CsgCommon.DefaultEpsilon) =>
-        new(BuildPolygonsFromModel(model, transform, meshId), epsilon);
+        CsgSolid.FromOperand(BuildPolygonsFromModel(model, transform, meshId), epsilon);
 
     /// <summary>Compute CSG boolean operation between two BSP operands and return resulting polygons.</summary>
     /// <remarks><paramref name="epsilon"/> is used consistently for BSP clipping in this operation.</remarks>
