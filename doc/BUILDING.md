@@ -15,7 +15,7 @@ ps -eo pid=,comm=,args= | rg '[e]mulator|[q]emu-system' || true
 dotnet build RedBolt.CSG.slnx --configuration Debug -m:4
 ```
 
-The solution accepts the same platform, architecture, module, and sample selection properties as RedBolt. Its saved selection is written to the active build root's `BuildConfig.props`: a standalone checkout keeps its own under `build/`; inside the monorepo the module solution shares the monorepo `build/BuildConfig.props` with the root solution. The build root is selected statically rather than recorded: inside the monorepo every entry point (solution or direct project) uses the monorepo `build/`, a standalone checkout uses its own `build/`, and `-p:RedBoltBuildRoot=<dir>` overrides both.
+The solution accepts the same `RedBoltEnable`, module, and sample selection properties as RedBolt. Its saved selection is written to the active build root's `BuildConfig.props`: a standalone checkout keeps its own under `build/`; inside the monorepo the module solution shares the monorepo `build/BuildConfig.props` with the root solution. The build root is selected statically rather than recorded: inside the monorepo every entry point (solution or direct project) uses the monorepo `build/`, a standalone checkout uses its own `build/`, and `-p:RedBoltBuildRoot=<dir>` overrides both.
 
 Build the aggregate WebAssembly or Android sample hosts directly. Use one build invocation at a time and do not use four build jobs while an Android emulator is running:
 
