@@ -532,7 +532,7 @@ public static partial class Csg
     }
 
     // TODO: port
-    // void RegisterCsgLibrary(PluginApplication& plugin)
+    // void RegisterCsgLibrary(Plugin& plugin)
     // {
     //     plugin.RegisterObject<CsgComponent>();
     //     plugin.RegisterObject<CsgBrush>();
